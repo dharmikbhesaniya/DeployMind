@@ -106,6 +106,14 @@ interface SystemStatus {
   };
 }
 
+const API_BASE = typeof window !== 'undefined' && window.location.port === '5173'
+  ? `http://${window.location.hostname}:3000`
+  : '';
+
+const WS_BASE = typeof window !== 'undefined' && window.location.port === '5173'
+  ? `ws://${window.location.hostname}:3000`
+  : (typeof window !== 'undefined' ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}` : '');
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'deploy' | 'projects' | 'vault' | 'proxy' | 'backups'>('deploy');
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
@@ -155,11 +163,11 @@ export default function App() {
   const fetchData = async () => {
     try {
       const [sysRes, projRes, vaultRes, routeRes, backupRes] = await Promise.all([
-        fetch('/api/system/status'),
-        fetch('/api/projects'),
-        fetch('/api/vault/credentials'),
-        fetch('/api/routes'),
-        fetch('/api/backups'),
+        fetch(`${API_BASE}/api/system/status`),
+        fetch(`${API_BASE}/api/projects`),
+        fetch(`${API_BASE}/api/vault/credentials`),
+        fetch(`${API_BASE}/api/routes`),
+        fetch(`${API_BASE}/api/backups`),
       ]);
       if (sysRes.ok) setSystemStatus(await sysRes.json());
       if (projRes.ok) setProjects(await projRes.json());
@@ -181,8 +189,7 @@ export default function App() {
   useEffect(() => {
     if (!planResult?.deploymentId) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/logs?deploymentId=${planResult.deploymentId}`);
+    const ws = new WebSocket(`${WS_BASE}/ws/logs?deploymentId=${planResult.deploymentId}`);
 
     ws.onmessage = (event) => {
       try {
@@ -209,7 +216,7 @@ export default function App() {
     setLiveUrl(null);
 
     try {
-      const res = await fetch('/api/deployments/auto-deploy', {
+      const res = await fetch(`${API_BASE}/api/deployments/auto-deploy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ repoUrl }),
@@ -244,7 +251,7 @@ export default function App() {
     setLiveUrl(null);
 
     try {
-      const res = await fetch('/api/deployments/analyze', {
+      const res = await fetch(`${API_BASE}/api/deployments/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ repoUrl }),
@@ -294,7 +301,7 @@ export default function App() {
     }));
 
     try {
-      const res = await fetch('/api/deployments/execute', {
+      const res = await fetch(`${API_BASE}/api/deployments/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -321,7 +328,7 @@ export default function App() {
   const handleRunBackup = async () => {
     setRunningBackup(true);
     try {
-      const res = await fetch('/api/backups/run', { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/backups/run`, { method: 'POST' });
       if (res.ok) fetchData();
     } finally {
       setRunningBackup(false);
@@ -334,7 +341,7 @@ export default function App() {
     if (!newCredKey || !newCredValue || !newCredDesc) return;
 
     try {
-      const res = await fetch('/api/vault/credentials', {
+      const res = await fetch(`${API_BASE}/api/vault/credentials`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
