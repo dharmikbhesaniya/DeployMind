@@ -40,7 +40,12 @@ export const config = {
   masterKey: resolveMasterKey(),
 
   docker: {
-    socketPath: process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock',
+    socketPath:
+      process.env.DOCKER_SOCKET_PATH ||
+      (process.platform === 'darwin' &&
+      fs.existsSync(path.join(process.env.HOME || '', '.docker/run/docker.sock'))
+        ? path.join(process.env.HOME || '', '.docker/run/docker.sock')
+        : '/var/run/docker.sock'),
   },
 
   proxy: {

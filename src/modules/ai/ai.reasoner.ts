@@ -9,51 +9,14 @@ export class AIReasoner {
     manifest: RepoManifestSnapshot,
     projectName: string
   ): Promise<DeploymentPlan> {
-    // 1. Process environment variables and cross-reference with Vault
+    // 1. Process environment variables strictly from repository dependencies
     const variables: DetectedVariable[] = [];
 
-    // Helper to categorize variable based on key name, comment, and values
+    // Helper to categorize variable based on actual repository declaration
     for (const v of manifest.detectedVariables) {
       const key = v.key;
-      const upper = key.toUpperCase();
-      let type: DetectedVariable['type'] = 'OPTIONAL_DEFAULT';
-      let recommendedGenerator: DetectedVariable['recommendedGenerator'] = 'none';
-
-      if (
-        upper.includes('SECRET') ||
-        upper.includes('KEY') ||
-        upper.includes('PASSWORD') ||
-        upper.includes('TOKEN') ||
-        upper.includes('SALT')
-      ) {
-        if (
-          upper.includes('OPENAI') ||
-          upper.includes('STRIPE') ||
-          upper.includes('AWS') ||
-          upper.includes('GITHUB') ||
-          upper.includes('RESEND') ||
-          upper.includes('SMTP') ||
-          upper.includes('MAIL')
-        ) {
-          type = 'EXTERNAL_REQUIRED';
-        } else if (
-          upper.includes('DATABASE') ||
-          upper.includes('POSTGRES') ||
-          upper.includes('REDIS') ||
-          upper.includes('MONGO')
-        ) {
-          type = 'INTERNAL_INFRASTRUCTURE';
-        } else {
-          type = 'AUTO_GENERATED_SECRET';
-          recommendedGenerator = 'hex32';
-        }
-      } else if (upper.includes('URL') || upper.includes('URI') || upper.includes('HOST')) {
-        if (upper.includes('DB') || upper.includes('DATABASE') || upper.includes('REDIS')) {
-          type = 'INTERNAL_INFRASTRUCTURE';
-        } else {
-          type = 'EXTERNAL_REQUIRED';
-        }
-      }
+      // Mark as optional if repository provided a default value, otherwise required dependency
+      const type: DetectedVariable['type'] = v.rawValue && v.rawValue.length > 0 ? 'OPTIONAL_DEFAULT' : 'EXTERNAL_REQUIRED';
 
       // Check Vault for existing credentials with identical key name
       const existingInVault = await vaultService.findCredentialsByKey(key);
@@ -69,38 +32,32 @@ export class AIReasoner {
       variables.push({
         key,
         type,
-        description: v.comment || `Environment variable for ${key}`,
-        defaultValue: v.rawValue,
-        recommendedGenerator,
+        description: v.comment || `Project dependency: ${key}`,
+        defaultValue: v.rawValue || '',
+        recommendedGenerator: 'none',
         matchingVaultCredentialId,
         reusePrompt,
       });
     }
 
-    // 2. Detect required backing services
+    // 2. Detect required backing services strictly if declared in compose or project dependencies
     const requiredBackingServices: DeploymentPlan['requiredBackingServices'] = [];
-    const fullText = (
-      (manifest.composeContent || '') +
-      ' ' +
-      (manifest.envExampleContent || '') +
-      ' ' +
-      manifest.docSections.map((s) => s.content).join(' ')
-    ).toLowerCase();
-
-    if (fullText.includes('postgres') || fullText.includes('psql') || fullText.includes('pg_')) {
-      requiredBackingServices.push({
-        serviceType: 'postgres',
-        strategy: 'reuse_shared',
-        reason: 'PostgreSQL database dependency detected in configuration/documentation.',
-      });
-    }
-
-    if (fullText.includes('redis') || fullText.includes('ioredis') || fullText.includes('bullmq')) {
-      requiredBackingServices.push({
-        serviceType: 'redis',
-        strategy: 'reuse_shared',
-        reason: 'Redis cache or queue dependency detected in configuration/documentation.',
-      });
+    if (manifest.composeContent) {
+      const composeLower = manifest.composeContent.toLowerCase();
+      if (composeLower.includes('postgres') || composeLower.includes('postgresql')) {
+        requiredBackingServices.push({
+          serviceType: 'postgres',
+          strategy: 'reuse_shared',
+          reason: 'PostgreSQL service explicitly declared in docker-compose manifest.',
+        });
+      }
+      if (composeLower.includes('redis')) {
+        requiredBackingServices.push({
+          serviceType: 'redis',
+          strategy: 'reuse_shared',
+          reason: 'Redis service explicitly declared in docker-compose manifest.',
+        });
+      }
     }
 
     // 3. Fallback / AI Enhancements
@@ -130,11 +87,7 @@ export class AIReasoner {
       exposedPort: port,
       healthCheckPath: '/',
       entrypointCommand: manifest.readmeAnalysis?.detectedStartCommand || undefined,
-      migrationCommand: manifest.readmeAnalysis?.detectedMigrationCommand || (fullText.includes('prisma')
-        ? 'npx prisma migrate deploy'
-        : fullText.includes('drizzle')
-        ? 'npm run db:push'
-        : undefined),
+      migrationCommand: manifest.readmeAnalysis?.detectedMigrationCommand || undefined,
       environmentVariables: variables,
       requiredBackingServices,
       runtimeStrategy: 'docker_priority',

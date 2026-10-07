@@ -24,7 +24,8 @@ import {
   Copy,
   Check,
   Cpu,
-  FileText
+  FileText,
+  Trash2
 } from 'lucide-react';
 
 interface Project {
@@ -157,6 +158,42 @@ export default function App() {
   const [newCredDesc, setNewCredDesc] = useState('');
   const [newCredScope, setNewCredScope] = useState<'GLOBAL' | 'PROJECT_SCOPED'>('GLOBAL');
 
+  // Custom Variables in Plan Review
+  const [customVars, setCustomVars] = useState<Array<{ key: string; value: string; description: string }>>([]);
+  const [showAddCustomVar, setShowAddCustomVar] = useState(false);
+  const [newCustomKey, setNewCustomKey] = useState('');
+  const [newCustomValue, setNewCustomValue] = useState('');
+  const [newCustomDesc, setNewCustomDesc] = useState('');
+
+  const handleAddCustomVar = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCustomKey.trim()) return;
+    const cleanKey = newCustomKey.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    const desc = newCustomDesc.trim() || `Configured variable for ${cleanKey}`;
+    setCustomVars((prev) => [...prev, { key: cleanKey, value: newCustomValue, description: desc }]);
+    setVarDecisions((prev) => ({
+      ...prev,
+      [cleanKey]: {
+        action: 'create_new',
+        newValue: newCustomValue,
+        description: desc,
+      },
+    }));
+    setNewCustomKey('');
+    setNewCustomValue('');
+    setNewCustomDesc('');
+    setShowAddCustomVar(false);
+  };
+
+  const handleRemoveCustomVar = (key: string) => {
+    setCustomVars((prev) => prev.filter((v) => v.key !== key));
+    setVarDecisions((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+
   const logEndRef = useRef<HTMLDivElement>(null);
 
   // Fetch initial data
@@ -260,7 +297,10 @@ export default function App() {
       if (res.ok) {
         setPlanResult(data);
 
-        // Pre-fill variable decisions with matching vault credentials if any
+        setCustomVars([]);
+        setShowAddCustomVar(false);
+
+        // Pre-fill variable decisions with matching vault credentials or defaults
         const initialDecisions: Record<string, any> = {};
         for (const v of data.plan.environmentVariables) {
           if (v.matchingVaultCredentialId) {
@@ -268,10 +308,10 @@ export default function App() {
               action: 'use_existing',
               vaultCredentialId: v.matchingVaultCredentialId,
             };
-          } else if (v.type === 'EXTERNAL_REQUIRED') {
+          } else {
             initialDecisions[v.key] = {
               action: 'create_new',
-              newValue: '',
+              newValue: v.defaultValue || '',
               description: v.description,
             };
           }
@@ -679,14 +719,79 @@ export default function App() {
 
                   {/* Environment Variables & Reusable Vault Decisions */}
                   <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-                    <div className="border-b border-slate-800 pb-3 mb-4">
-                      <h3 className="text-base font-semibold text-white">Environment Configuration & Secret Resolution</h3>
-                      <p className="text-xs text-slate-400">
-                        Secrets can be auto-generated, linked to shared infrastructure, or re-used from your Credential Vault.
-                      </p>
+                    <div className="border-b border-slate-800 pb-3 mb-4 flex items-center justify-between">
+                      <div>
+                        <h3 className="text-base font-semibold text-white">Project Dependencies & Environment Variables</h3>
+                        <p className="text-xs text-slate-400">
+                          AI detected only actual dependencies from repository. You can configure values or add custom variables.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowAddCustomVar((prev) => !prev)}
+                        className="bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 hover:border-emerald-500/50 text-xs font-medium px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        <span>{showAddCustomVar ? 'Cancel' : 'Add Custom Variable'}</span>
+                      </button>
                     </div>
 
+                    {/* Inline Add Custom Variable Form */}
+                    {showAddCustomVar && (
+                      <form onSubmit={handleAddCustomVar} className="mb-4 bg-slate-950 border border-emerald-800/60 rounded-lg p-3.5 space-y-2.5">
+                        <div className="text-xs font-semibold text-emerald-400">New Custom Environment Variable</div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          <input
+                            type="text"
+                            placeholder="VARIABLE_KEY (e.g. PORT, API_KEY)"
+                            value={newCustomKey}
+                            onChange={(e) => setNewCustomKey(e.target.value)}
+                            required
+                            className="bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Value"
+                            value={newCustomValue}
+                            onChange={(e) => setNewCustomValue(e.target.value)}
+                            required
+                            className="bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Description (optional)"
+                            value={newCustomDesc}
+                            onChange={(e) => setNewCustomDesc(e.target.value)}
+                            className="bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                          />
+                        </div>
+                        <div className="flex justify-end space-x-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowAddCustomVar(false)}
+                            className="px-3 py-1 text-xs text-slate-400 hover:text-slate-200"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium px-3.5 py-1 rounded"
+                          >
+                            Save Variable
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
                     <div className="space-y-3">
+                      {planResult.plan.environmentVariables.length === 0 && customVars.length === 0 && (
+                        <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 text-center text-xs text-slate-400">
+                          <CheckCircle2 className="h-4 w-4 text-emerald-400 mx-auto mb-1" />
+                          <span>No mandatory environment variable dependencies detected in this repository. Click "Add Custom Variable" above if your application requires custom variables, or deploy directly.</span>
+                        </div>
+                      )}
+
+                      {/* Detected Repository Dependencies */}
                       {planResult.plan.environmentVariables.map((v) => {
                         const currentDecision = varDecisions[v.key];
 
@@ -697,59 +802,47 @@ export default function App() {
                                 <div className="flex items-center space-x-2">
                                   <span className="font-mono text-sm font-semibold text-emerald-400">{v.key}</span>
                                   <span className="text-[10px] px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-400 uppercase">
-                                    {v.type.replace('_', ' ')}
+                                    {v.type === 'OPTIONAL_DEFAULT' ? 'OPTIONAL (HAS DEFAULT)' : 'REQUIRED DEPENDENCY'}
                                   </span>
                                 </div>
                                 <p className="text-xs text-slate-400 mt-0.5">{v.description}</p>
                               </div>
+                              {v.defaultValue && (
+                                <span className="text-[11px] font-mono text-slate-500 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                                  Default: {v.defaultValue}
+                                </span>
+                              )}
                             </div>
 
-                            {/* Auto-generated / Infrastructure badges */}
-                            {v.type === 'AUTO_GENERATED_SECRET' && (
-                              <div className="text-xs text-emerald-400/90 bg-emerald-950/40 border border-emerald-900/60 rounded px-2.5 py-1.5 flex items-center space-x-2">
-                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                                <span>Will automatically generate a high-entropy 256-bit cryptographic secret.</span>
-                              </div>
-                            )}
+                            {/* Vault Reuse Option or Value Input */}
+                            <div className="mt-2.5 pt-2.5 border-t border-slate-800/80 space-y-2">
+                              {v.reusePrompt && (
+                                <div className="bg-amber-950/30 border border-amber-900/50 rounded p-2 text-xs text-amber-300 flex items-center space-x-2">
+                                  <Info className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
+                                  <span>{v.reusePrompt}</span>
+                                </div>
+                              )}
 
-                            {v.type === 'INTERNAL_INFRASTRUCTURE' && (
-                              <div className="text-xs text-blue-400/90 bg-blue-950/40 border border-blue-900/60 rounded px-2.5 py-1.5 flex items-center space-x-2">
-                                <Database className="h-3.5 w-3.5 text-blue-400" />
-                                <span>Will automatically inject isolated connection string from shared infrastructure.</span>
-                              </div>
-                            )}
-
-                            {/* Vault Reuse Option or External Required */}
-                            {(v.type === 'EXTERNAL_REQUIRED' || v.matchingVaultCredentialId) && (
-                              <div className="mt-2.5 pt-2.5 border-t border-slate-800/80 space-y-2">
-                                {v.reusePrompt && (
-                                  <div className="bg-amber-950/30 border border-amber-900/50 rounded p-2 text-xs text-amber-300 flex items-center space-x-2">
-                                    <Info className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
-                                    <span>{v.reusePrompt}</span>
-                                  </div>
-                                )}
-
+                              {v.matchingVaultCredentialId && (
                                 <div className="flex items-center space-x-3 text-xs mb-2">
-                                  {v.matchingVaultCredentialId && (
-                                    <label className="flex items-center space-x-1.5 cursor-pointer">
-                                      <input
-                                        type="radio"
-                                        name={`action_${v.key}`}
-                                        checked={currentDecision?.action === 'use_existing'}
-                                        onChange={() =>
-                                          setVarDecisions((prev) => ({
-                                            ...prev,
-                                            [v.key]: {
-                                              action: 'use_existing',
-                                              vaultCredentialId: v.matchingVaultCredentialId,
-                                            },
-                                          }))
-                                        }
-                                        className="text-emerald-500 focus:ring-emerald-500"
-                                      />
-                                      <span className="text-slate-300">Use Existing Vault Credential</span>
-                                    </label>
-                                  )}
+                                  <label className="flex items-center space-x-1.5 cursor-pointer">
+                                    <input
+                                      type="radio"
+                                      name={`action_${v.key}`}
+                                      checked={currentDecision?.action === 'use_existing'}
+                                      onChange={() =>
+                                        setVarDecisions((prev) => ({
+                                          ...prev,
+                                          [v.key]: {
+                                            action: 'use_existing',
+                                            vaultCredentialId: v.matchingVaultCredentialId,
+                                          },
+                                        }))
+                                      }
+                                      className="text-emerald-500 focus:ring-emerald-500"
+                                    />
+                                    <span className="text-slate-300">Use Existing Vault Credential</span>
+                                  </label>
 
                                   <label className="flex items-center space-x-1.5 cursor-pointer">
                                     <input
@@ -761,58 +854,101 @@ export default function App() {
                                           ...prev,
                                           [v.key]: {
                                             action: 'create_new',
-                                            newValue: '',
+                                            newValue: currentDecision?.newValue ?? v.defaultValue ?? '',
                                             description: `Key for ${planResult.plan.projectName}`,
                                           },
                                         }))
                                       }
                                       className="text-emerald-500 focus:ring-emerald-500"
                                     />
-                                    <span className="text-slate-300">Create New (Custom Value)</span>
+                                    <span className="text-slate-300">Enter Value</span>
                                   </label>
                                 </div>
+                              )}
 
-                                {currentDecision?.action === 'create_new' && (
-                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
-                                    <input
-                                      type="password"
-                                      placeholder={`Enter secret value for ${v.key}`}
-                                      value={currentDecision?.newValue || ''}
-                                      onChange={(e) =>
-                                        setVarDecisions((prev) => ({
-                                          ...prev,
-                                          [v.key]: {
-                                            ...prev[v.key],
-                                            action: 'create_new',
-                                            newValue: e.target.value,
-                                          },
-                                        }))
-                                      }
-                                      className="bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                    />
-                                    <input
-                                      type="text"
-                                      placeholder="Descriptive label (e.g. Org Production Key)"
-                                      value={currentDecision?.description || ''}
-                                      onChange={(e) =>
-                                        setVarDecisions((prev) => ({
-                                          ...prev,
-                                          [v.key]: {
-                                            ...prev[v.key],
-                                            action: 'create_new',
-                                            description: e.target.value,
-                                          },
-                                        }))
-                                      }
-                                      className="bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                                    />
-                                  </div>
-                                )}
-                              </div>
-                            )}
+                              {(!v.matchingVaultCredentialId || currentDecision?.action === 'create_new') && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
+                                  <input
+                                    type="text"
+                                    placeholder={v.defaultValue ? `Value (default: ${v.defaultValue})` : `Enter value for ${v.key}`}
+                                    value={currentDecision?.newValue ?? ''}
+                                    onChange={(e) =>
+                                      setVarDecisions((prev) => ({
+                                        ...prev,
+                                        [v.key]: {
+                                          action: 'create_new',
+                                          newValue: e.target.value,
+                                          description: v.description,
+                                        },
+                                      }))
+                                    }
+                                    className="bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono"
+                                  />
+                                  <input
+                                    type="text"
+                                    placeholder="Label / note (optional)"
+                                    value={currentDecision?.description ?? v.description ?? ''}
+                                    onChange={(e) =>
+                                      setVarDecisions((prev) => ({
+                                        ...prev,
+                                        [v.key]: {
+                                          ...prev[v.key],
+                                          description: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    className="bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                                  />
+                                </div>
+                              )}
+                            </div>
                           </div>
                         );
                       })}
+
+                      {/* User-Added Custom Variables */}
+                      {customVars.map((cv) => (
+                        <div key={cv.key} className="bg-slate-950 border border-emerald-900/60 rounded-lg p-3.5">
+                          <div className="flex items-start justify-between mb-2">
+                            <div>
+                              <div className="flex items-center space-x-2">
+                                <span className="font-mono text-sm font-semibold text-emerald-400">{cv.key}</span>
+                                <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 border border-emerald-800 text-emerald-400 uppercase font-bold">
+                                  CUSTOM
+                                </span>
+                              </div>
+                              <p className="text-xs text-slate-400 mt-0.5">{cv.description}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveCustomVar(cv.key)}
+                              className="text-slate-500 hover:text-rose-400 p-1"
+                              title="Remove custom variable"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+
+                          <div className="mt-2 pt-2 border-t border-slate-800/80">
+                            <input
+                              type="text"
+                              value={varDecisions[cv.key]?.newValue ?? cv.value}
+                              onChange={(e) =>
+                                setVarDecisions((prev) => ({
+                                  ...prev,
+                                  [cv.key]: {
+                                    action: 'create_new',
+                                    newValue: e.target.value,
+                                    description: cv.description,
+                                  },
+                                }))
+                              }
+                              placeholder={`Value for ${cv.key}`}
+                              className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono"
+                            />
+                          </div>
+                        </div>
+                      ))}
                     </div>
 
                     <div className="mt-5 pt-4 border-t border-slate-800 flex justify-end">

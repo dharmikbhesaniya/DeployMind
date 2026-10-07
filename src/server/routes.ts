@@ -98,7 +98,7 @@ export async function registerRoutes(app: FastifyInstance) {
     return { success: true, created: backups };
   });
 
-  // List all projects
+  // List all deployed projects
   app.get('/api/projects', async () => {
     const projectsList = await db
       .select()
@@ -107,6 +107,20 @@ export async function registerRoutes(app: FastifyInstance) {
 
     const results = [];
     for (const p of projectsList) {
+      // Exclude DeployMind itself from the managed projects list
+      const slugLower = (p.slug || '').toLowerCase();
+      const nameLower = (p.name || '').toLowerCase();
+      const repoLower = (p.repoUrl || '').toLowerCase();
+      if (
+        slugLower.includes('deploymind') ||
+        slugLower.includes('deployagent') ||
+        nameLower.includes('deploymind') ||
+        nameLower.includes('deployagent') ||
+        repoLower.includes('dharmikbhesaniya/deploymind')
+      ) {
+        continue;
+      }
+
       const servs = await db.select().from(schema.services).where(eq(schema.services.projectId, p.id));
       const deps = await db
         .select()
@@ -115,10 +129,17 @@ export async function registerRoutes(app: FastifyInstance) {
         .orderBy(desc(schema.deployments.createdAt))
         .limit(1);
 
+      const latestStatus = deps[0]?.status || 'created';
+
+      // Only display projects that have completed deployment or have active services
+      if (servs.length === 0 && latestStatus !== 'healthy' && latestStatus !== 'deploying') {
+        continue;
+      }
+
       results.push({
         ...p,
         servicesCount: servs.length,
-        status: deps[0]?.status || 'created',
+        status: latestStatus,
       });
     }
 

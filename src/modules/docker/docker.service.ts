@@ -1,4 +1,7 @@
 import Docker from 'dockerode';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { config } from '../../config/index.js';
 
 export class DockerService {
@@ -16,6 +19,71 @@ export class DockerService {
     } catch {
       return false;
     }
+  }
+
+  // Build a Docker image from context directory
+  async buildImage(params: {
+    contextDir: string;
+    tag: string;
+    dockerfilePath?: string;
+    onLog?: (line: string) => void;
+  }): Promise<{ success: boolean; error?: string }> {
+    return new Promise((resolve) => {
+      const dockerfile = params.dockerfilePath || path.join(params.contextDir, 'Dockerfile');
+      if (!fs.existsSync(dockerfile)) {
+        return resolve({ success: false, error: `Dockerfile not found at ${dockerfile}` });
+      }
+
+      const args = ['build', '-t', params.tag];
+      if (params.dockerfilePath) {
+        args.push('-f', params.dockerfilePath);
+      }
+      args.push(params.contextDir);
+
+      try {
+        const proc = spawn('docker', args, {
+          cwd: params.contextDir,
+          env: {
+            ...process.env,
+            DOCKER_HOST: `unix://${config.docker.socketPath}`,
+          },
+        });
+
+        let errorOutput = '';
+
+        proc.stdout.on('data', (data) => {
+          const text = data.toString('utf8');
+          if (params.onLog) {
+            text.split('\n').filter(Boolean).forEach((line: string) => params.onLog!(line));
+          }
+        });
+
+        proc.stderr.on('data', (data) => {
+          const text = data.toString('utf8');
+          errorOutput += text;
+          if (params.onLog) {
+            text.split('\n').filter(Boolean).forEach((line: string) => params.onLog!(line));
+          }
+        });
+
+        proc.on('close', (code) => {
+          if (code === 0) {
+            resolve({ success: true });
+          } else {
+            resolve({
+              success: false,
+              error: errorOutput.trim() || `Docker build exited with code ${code}`,
+            });
+          }
+        });
+
+        proc.on('error', (err) => {
+          resolve({ success: false, error: err.message });
+        });
+      } catch (err: any) {
+        resolve({ success: false, error: err.message });
+      }
+    });
   }
 
   // Ensure isolated bridge network exists for inter-container & proxy communication

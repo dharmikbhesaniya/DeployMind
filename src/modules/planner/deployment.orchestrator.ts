@@ -216,83 +216,42 @@ export class DeploymentOrchestrator {
       message: `Starting autonomous deployment for ${plan.projectName}...`,
     });
 
-    // 1. Resolve environment variables based on decisions & backing services
-    for (const v of plan.environmentVariables) {
-      const decision = params.variableDecisions.find((d) => d.key === v.key);
+    // 1. Resolve environment variables: only bind user decisions, Vault reuses, or repository defaults
+    const handledKeys = new Set<string>();
 
-      if (v.type === 'AUTO_GENERATED_SECRET') {
-        const val = vaultService.generateRandomSecret(v.recommendedGenerator === 'none' ? 'hex32' : v.recommendedGenerator);
+    for (const decision of params.variableDecisions) {
+      if (!decision.key) continue;
+      handledKeys.add(decision.key);
+
+      if (decision.action === 'use_existing' && decision.vaultCredentialId) {
+        await vaultService.bindCredentialToProject({
+          projectId,
+          targetEnvVar: decision.key,
+          vaultCredentialId: decision.vaultCredentialId,
+        });
+      } else if (decision.newValue !== undefined && decision.newValue !== '') {
         const cred = await vaultService.createCredential({
-          keyName: v.key,
-          plaintextValue: val,
-          description: `Auto-generated secret for ${plan.projectName}`,
-          isSystemGenerated: true,
+          keyName: decision.key,
+          plaintextValue: decision.newValue,
+          description: decision.description || `Configured variable for ${plan.projectName}`,
+          owningProjectId: projectId,
+          scope: 'GLOBAL',
         });
         await vaultService.bindCredentialToProject({
           projectId,
-          targetEnvVar: v.key,
+          targetEnvVar: decision.key,
           vaultCredentialId: cred.id,
         });
-      } else if (v.type === 'INTERNAL_INFRASTRUCTURE') {
-        let uri = '';
-        if (v.key.includes('REDIS')) {
-          const tenant = await resourceManager.provisionRedisTenant(projectId);
-          uri = tenant.connectionUri;
-        } else {
-          const tenant = await resourceManager.provisionPostgresTenant(projectId);
-          uri = tenant.connectionUri;
-        }
-        const cred = await vaultService.createCredential({
-          keyName: v.key,
-          plaintextValue: uri,
-          description: `Provisioned shared infrastructure URI for ${plan.projectName}`,
-          isSystemGenerated: true,
-        });
-        await vaultService.bindCredentialToProject({
-          projectId,
-          targetEnvVar: v.key,
-          vaultCredentialId: cred.id,
-        });
-      } else if (decision) {
-        if (decision.action === 'use_existing' && decision.vaultCredentialId) {
-          await vaultService.bindCredentialToProject({
-            projectId,
-            targetEnvVar: v.key,
-            vaultCredentialId: decision.vaultCredentialId,
-          });
-        } else if (decision.action === 'create_new' && decision.newValue) {
-          const cred = await vaultService.createCredential({
-            keyName: v.key,
-            plaintextValue: decision.newValue,
-            description: decision.description || `Key for ${plan.projectName}`,
-            owningProjectId: projectId,
-            scope: 'GLOBAL',
-          });
-          await vaultService.bindCredentialToProject({
-            projectId,
-            targetEnvVar: v.key,
-            vaultCredentialId: cred.id,
-          });
-        } else if (decision.action === 'auto_generate') {
-          // Autonomous fallback generation for zero-touch deploys
-          const val = vaultService.generateRandomSecret('hex32');
-          const cred = await vaultService.createCredential({
-            keyName: v.key,
-            plaintextValue: val,
-            description: `Auto-synthesized key for ${v.key}`,
-            isSystemGenerated: true,
-          });
-          await vaultService.bindCredentialToProject({
-            projectId,
-            targetEnvVar: v.key,
-            vaultCredentialId: cred.id,
-          });
-        }
-      } else if (v.defaultValue) {
+      }
+    }
+
+    // Process any remaining detected variables that have repository default values
+    for (const v of plan.environmentVariables) {
+      if (!handledKeys.has(v.key) && v.defaultValue) {
         const cred = await vaultService.createCredential({
           keyName: v.key,
           plaintextValue: v.defaultValue,
-          description: `Default value for ${v.key}`,
+          description: `Repository default for ${v.key}`,
         });
         await vaultService.bindCredentialToProject({
           projectId,
@@ -312,38 +271,95 @@ export class DeploymentOrchestrator {
     const isDockerAvailable = await dockerService.isAvailable();
     let containerId = 'simulated_container_id';
     let targetUpstream = '';
+    let deployedWithDocker = false;
 
     if (isDockerAvailable) {
-      // PRIORITY 1: DOCKER CONTAINER RUNTIME
       eventBus.emitLog({
         deploymentId: params.deploymentId,
         timestamp: Date.now(),
         level: 'info',
         stage: 'deploy',
-        message: `[Runtime Priority 1: Docker] Launching containerized application ${containerName} (isolated network, CPU & memory limits)...`,
+        message: `[Runtime Priority 1: Docker] Building container image from repository context...`,
       });
 
-      const res = await dockerService.startContainer({
-        containerName,
-        imageTag: 'node:22-alpine',
-        env: resolvedEnv,
-        exposedPort: plan.exposedPort,
-        memoryLimitMb: 1024,
-        cpuLimit: 1,
+      // Ensure Dockerfile exists in sourceDir (synthesize if missing)
+      const dockerfilePath = path.join(sourceDir, 'Dockerfile');
+      if (!fs.existsSync(dockerfilePath)) {
+        const generated = dockerfileSynthesizer.synthesizeDockerfile(rawManifest);
+        try {
+          fs.writeFileSync(dockerfilePath, generated, 'utf8');
+        } catch {
+          // Non-fatal
+        }
+      }
+
+      const imageTag = `deploymind-${projectId.toLowerCase().replace(/[^a-z0-9]/g, '-')}:latest`;
+
+      const buildResult = await dockerService.buildImage({
+        contextDir: sourceDir,
+        tag: imageTag,
+        onLog: (line) => {
+          eventBus.emitLog({
+            deploymentId: params.deploymentId,
+            timestamp: Date.now(),
+            level: 'info',
+            stage: 'build',
+            message: `[Docker Build] ${line}`,
+          });
+        },
       });
-      containerId = res.containerId;
-      targetUpstream = `${containerName}:${plan.exposedPort}`;
-    } else {
+
+      if (buildResult.success) {
+        eventBus.emitLog({
+          deploymentId: params.deploymentId,
+          timestamp: Date.now(),
+          level: 'success',
+          stage: 'deploy',
+          message: `[Docker Build] Image ${imageTag} built successfully! Starting container ${containerName}...`,
+        });
+
+        try {
+          const res = await dockerService.startContainer({
+            containerName,
+            imageTag,
+            env: resolvedEnv,
+            exposedPort: plan.exposedPort,
+            memoryLimitMb: 1024,
+            cpuLimit: 1,
+          });
+          containerId = res.containerId;
+          targetUpstream = `${containerName}:${plan.exposedPort}`;
+          deployedWithDocker = true;
+        } catch (startErr: any) {
+          eventBus.emitLog({
+            deploymentId: params.deploymentId,
+            timestamp: Date.now(),
+            level: 'error',
+            stage: 'deploy',
+            message: `Failed to launch container: ${startErr.message}. Falling back to Priority 2 Native Runner...`,
+          });
+        }
+      } else {
+        eventBus.emitLog({
+          deploymentId: params.deploymentId,
+          timestamp: Date.now(),
+          level: 'warn',
+          stage: 'build',
+          message: `Docker image build bypassed: ${buildResult.error || 'Build failed'}. Falling back to Priority 2: Native host runner in strict production mode...`,
+        });
+      }
+    }
+
+    if (!deployedWithDocker) {
       // PRIORITY 2: NATIVE HOST RUNNER IN STRICT PRODUCTION MODE
       eventBus.emitLog({
         deploymentId: params.deploymentId,
         timestamp: Date.now(),
         level: 'warn',
         stage: 'deploy',
-        message: `[Docker Offline] Priority 1 bypassed. Executing directly on host in STRICT PRODUCTION MODE (resource and storage optimized)...`,
+        message: `[Runtime Priority 2: Native Host Fallback] Executing cloned repository directly on host in STRICT PRODUCTION MODE (optimizing storage, CPU & RAM)...`,
       });
 
-      // Prepare native host production app directory from repository checkout
       const procInfo = await nativeRunner.startProductionApp({
         deploymentId: params.deploymentId,
         projectId,
@@ -351,8 +367,8 @@ export class DeploymentOrchestrator {
         env: resolvedEnv,
         port: plan.exposedPort,
         runtime: plan.runtime,
-        buildCommand: plan.migrationCommand,
-        startCommand: plan.entrypointCommand,
+        buildCommand: plan.readmeSummary?.detectedBuildCommand || plan.migrationCommand,
+        startCommand: plan.readmeSummary?.detectedStartCommand || plan.entrypointCommand,
       });
       containerId = `pid_${procInfo.pid}`;
       targetUpstream = `127.0.0.1:${plan.exposedPort}`;
@@ -364,10 +380,9 @@ export class DeploymentOrchestrator {
       projectId,
       name: 'web',
       containerId,
-      imageTag: isDockerAvailable ? 'docker:containerized' : 'native-host:strict-production',
+      imageTag: deployedWithDocker ? 'docker:containerized' : 'native-host:strict-production',
       internalPort: plan.exposedPort,
       desiredState: 'running',
-      actualState: 'running',
       resourceLimits: JSON.stringify({ cpu: 1, memoryMb: 1024 }),
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -440,7 +455,7 @@ export class DeploymentOrchestrator {
   }> {
     const { projectId, deploymentId, plan } = await this.analyzeAndPlan(repoUrl, projectName);
 
-    // Auto-synthesize decisions for every detected variable
+    // Map decisions for every detected variable using vault reuse or repository default
     const autoDecisions: VariableDecision[] = plan.environmentVariables.map((v) => {
       if (v.matchingVaultCredentialId) {
         return {
@@ -451,7 +466,8 @@ export class DeploymentOrchestrator {
       }
       return {
         key: v.key,
-        action: 'auto_generate',
+        action: 'create_new',
+        newValue: v.defaultValue || '',
       };
     });
 
