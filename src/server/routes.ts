@@ -5,6 +5,8 @@ import { deploymentOrchestrator } from '../modules/planner/deployment.orchestrat
 import { vaultService } from '../modules/vault/vault.service.js';
 import { proxyService } from '../modules/proxy/proxy.service.js';
 import { dockerService } from '../modules/docker/docker.service.js';
+import { backupManager } from '../modules/backup/backup.manager.js';
+import { webhookService } from '../modules/webhooks/webhook.service.js';
 import { eventBus } from '../core/events.js';
 
 export async function registerRoutes(app: FastifyInstance) {
@@ -24,6 +26,21 @@ export async function registerRoutes(app: FastifyInstance) {
         connected: isProxy,
       },
     };
+  });
+
+  // 1-Click Zero-Touch Autonomous Deployment (URL Only!)
+  app.post('/api/deployments/auto-deploy', async (req, reply) => {
+    const body = req.body as { repoUrl: string; projectName?: string };
+    if (!body?.repoUrl) {
+      return reply.status(400).send({ error: 'repoUrl is required' });
+    }
+
+    try {
+      const result = await deploymentOrchestrator.autoDeploy(body.repoUrl, body.projectName);
+      return result;
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'Auto-deployment failed' });
+    }
   });
 
   // Analyze a Git repository
@@ -57,6 +74,28 @@ export async function registerRoutes(app: FastifyInstance) {
     } catch (err: any) {
       return reply.status(500).send({ error: err.message || 'Execution failed' });
     }
+  });
+
+  // Git Push-to-Deploy Webhook Endpoint
+  app.post('/api/webhooks/:projectId', async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    try {
+      const result = await webhookService.handlePushEvent(projectId, req.body);
+      return result;
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'Webhook processing failed' });
+    }
+  });
+
+  // List Backups
+  app.get('/api/backups', async () => {
+    return backupManager.listBackups();
+  });
+
+  // Run On-Demand Backup
+  app.post('/api/backups/run', async () => {
+    const backups = await backupManager.runAutomatedBackup();
+    return { success: true, created: backups };
   });
 
   // List all projects

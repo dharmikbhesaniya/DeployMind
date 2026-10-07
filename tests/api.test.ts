@@ -99,4 +99,47 @@ describe('DeployAgent Monolith REST API Endpoints', () => {
     const routes = JSON.parse(res.payload);
     expect(Array.isArray(routes)).toBe(true);
   });
+
+  it('POST /api/backups/run and GET /api/backups should manage automated backups', async () => {
+    const runRes = await app.inject({
+      method: 'POST',
+      url: '/api/backups/run',
+    });
+
+    expect(runRes.statusCode).toBe(200);
+    const runBody = JSON.parse(runRes.payload);
+    expect(runBody.success).toBe(true);
+    expect(Array.isArray(runBody.created)).toBe(true);
+
+    const listRes = await app.inject({
+      method: 'GET',
+      url: '/api/backups',
+    });
+
+    expect(listRes.statusCode).toBe(200);
+    const backups = JSON.parse(listRes.payload);
+    expect(Array.isArray(backups)).toBe(true);
+    expect(backups.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('POST /api/deployments/auto-deploy should run 1-click zero-touch deployment', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/deployments/auto-deploy',
+      payload: {
+        repoUrl: 'https://github.com/example/sample-app',
+        projectName: 'Sample Autonomous App',
+      },
+    });
+
+    if (res.statusCode !== 200) {
+      console.error("AUTO DEPLOY ERROR:", res.payload);
+    }
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.projectId).toBeDefined();
+    expect(body.deploymentId).toBeDefined();
+    expect(body.liveUrl).toBeDefined();
+    expect(body.plan).toBeDefined();
+  });
 });

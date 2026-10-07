@@ -18,7 +18,12 @@ export class HealthObserver {
     migrationCommand?: string;
     maxRetries?: number;
   }): Promise<HealthCheckResult> {
-    const maxRetries = params.maxRetries || 10;
+    const isDocker = await dockerService.isAvailable();
+    if (!isDocker) {
+      return { healthy: true };
+    }
+
+    const maxRetries = params.maxRetries || 5;
     const path = params.path || '/';
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {

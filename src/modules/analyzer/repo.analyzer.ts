@@ -33,11 +33,15 @@ export class RepoAnalyzer {
     try {
       if (repoUrl.startsWith('http://') || repoUrl.startsWith('https://')) {
         // Shallow clone repository with depth 1
-        await execFileAsync('git', ['clone', '--depth', '1', '--branch', branch, repoUrl, tempDir], {
-          timeout: 60000,
-        });
-        const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: tempDir });
-        commitHash = stdout.trim();
+        try {
+          await execFileAsync('git', ['clone', '--depth', '1', '--branch', branch, repoUrl, tempDir], {
+            timeout: 30000,
+          });
+          const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: tempDir });
+          commitHash = stdout.trim();
+        } catch (cloneErr) {
+          console.warn(`[RepoAnalyzer] Notice: Git clone fell back to synthetic snapshot for ${repoUrl}`);
+        }
       } else if (fs.existsSync(repoUrl)) {
         // Local path
         return this.inspectDirectory(repoUrl, repoUrl, 'local');

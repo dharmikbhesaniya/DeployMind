@@ -17,7 +17,12 @@ import {
   ArrowRight,
   ChevronRight,
   Eye,
-  Info
+  Info,
+  Archive,
+  GitBranch,
+  Wand2,
+  Copy,
+  Check
 } from 'lucide-react';
 
 interface Project {
@@ -70,6 +75,14 @@ interface RouteItem {
   sslActive: boolean;
 }
 
+interface BackupItem {
+  id: string;
+  name: string;
+  sizeBytes: number;
+  createdAt: number;
+  type: string;
+}
+
 interface SystemStatus {
   status: string;
   engine: string;
@@ -82,12 +95,13 @@ interface SystemStatus {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'deploy' | 'projects' | 'vault' | 'proxy'>('deploy');
+  const [activeTab, setActiveTab] = useState<'deploy' | 'projects' | 'vault' | 'proxy' | 'backups'>('deploy');
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
 
   // Deploy state
   const [repoUrl, setRepoUrl] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
+  const [autoDeploying, setAutoDeploying] = useState(false);
   const [planResult, setPlanResult] = useState<{
     projectId: string;
     deploymentId: string;
@@ -112,6 +126,9 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [vaultCreds, setVaultCreds] = useState<VaultCred[]>([]);
   const [routes, setRoutes] = useState<RouteItem[]>([]);
+  const [backups, setBackups] = useState<BackupItem[]>([]);
+  const [runningBackup, setRunningBackup] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Add Credential Modal
   const [showAddCred, setShowAddCred] = useState(false);
@@ -125,16 +142,18 @@ export default function App() {
   // Fetch initial data
   const fetchData = async () => {
     try {
-      const [sysRes, projRes, vaultRes, routeRes] = await Promise.all([
+      const [sysRes, projRes, vaultRes, routeRes, backupRes] = await Promise.all([
         fetch('/api/system/status'),
         fetch('/api/projects'),
         fetch('/api/vault/credentials'),
         fetch('/api/routes'),
+        fetch('/api/backups'),
       ]);
       if (sysRes.ok) setSystemStatus(await sysRes.json());
       if (projRes.ok) setProjects(await projRes.json());
       if (vaultRes.ok) setVaultCreds(await vaultRes.json());
       if (routeRes.ok) setRoutes(await routeRes.json());
+      if (backupRes.ok) setBackups(await backupRes.json());
     } catch {
       // Backend maybe loading
     }
@@ -168,7 +187,41 @@ export default function App() {
     };
   }, [planResult?.deploymentId]);
 
-  // Handle repository analysis
+  // Handle 1-Click Zero-Touch Autonomous Deployment (URL Only!)
+  const handleAutoDeploy = async () => {
+    if (!repoUrl.trim()) return;
+
+    setAutoDeploying(true);
+    setPlanResult(null);
+    setDeploymentLogs([]);
+    setLiveUrl(null);
+
+    try {
+      const res = await fetch('/api/deployments/auto-deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPlanResult({
+          projectId: data.projectId,
+          deploymentId: data.deploymentId,
+          plan: data.plan,
+        });
+        setLiveUrl(data.liveUrl);
+        fetchData();
+      } else {
+        alert(data.error || 'Auto-deployment failed');
+      }
+    } catch (err: any) {
+      alert(`Auto-deploy network error: ${err.message}`);
+    } finally {
+      setAutoDeploying(false);
+    }
+  };
+
+  // Handle repository analysis (Interactive flow)
   const handleAnalyze = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!repoUrl.trim()) return;
@@ -252,6 +305,17 @@ export default function App() {
     }
   };
 
+  // Handle on-demand backup
+  const handleRunBackup = async () => {
+    setRunningBackup(true);
+    try {
+      const res = await fetch('/api/backups/run', { method: 'POST' });
+      if (res.ok) fetchData();
+    } finally {
+      setRunningBackup(false);
+    }
+  };
+
   // Handle create new credential in vault
   const handleCreateCred = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -292,10 +356,10 @@ export default function App() {
             <div className="flex items-center space-x-2">
               <span className="font-bold text-lg tracking-tight text-white">DeployAgent</span>
               <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">
-                MONOLITH v0.1
+                AI MONOLITH
               </span>
             </div>
-            <p className="text-xs text-slate-400">AI-First Autonomous Deployment Engine</p>
+            <p className="text-xs text-slate-400">Zero-Config Autonomous Self-Hosting</p>
           </div>
         </div>
 
@@ -343,7 +407,18 @@ export default function App() {
             }`}
           >
             <Globe className="h-3.5 w-3.5" />
-            <span>Proxy & Ingress ({routes.length})</span>
+            <span>Proxy ({routes.length})</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('backups')}
+            className={`flex items-center space-x-2 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+              activeTab === 'backups'
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Archive className="h-3.5 w-3.5" />
+            <span>Backups ({backups.length})</span>
           </button>
         </nav>
 
@@ -368,15 +443,19 @@ export default function App() {
             {/* Hero Input Box */}
             <div className="bg-gradient-to-b from-slate-900 to-slate-900/60 border border-slate-800 rounded-xl p-6 shadow-xl">
               <div className="max-w-3xl">
-                <h1 className="text-xl font-bold text-white mb-1.5 flex items-center space-x-2">
-                  <span>Deploy Any Repository with Zero Config</span>
+                <div className="flex items-center space-x-2 text-emerald-400 text-xs font-mono mb-1">
+                  <Wand2 className="h-3.5 w-3.5" />
+                  <span>AUTONOMOUS ZERO-TOUCH PIPELINE</span>
+                </div>
+                <h1 className="text-xl font-bold text-white mb-1.5">
+                  Paste Repository URL & Go Live
                 </h1>
-                <p className="text-sm text-slate-400 mb-6">
-                  Paste any GitHub URL. Our agent autonomously inspects the repository, reads the README, provisions shared databases, synthesizes environment variables, and configures reverse proxy ingress.
+                <p className="text-sm text-slate-400 mb-5">
+                  No Dockerfile? No problem. The agent inspects code, synthesizes missing Dockerfiles, provisions shared PostgreSQL/Redis, wires secrets, and configures SSL routing automatically.
                 </p>
 
-                <form onSubmit={handleAnalyze} className="flex gap-2.5">
-                  <div className="relative flex-1">
+                <div className="space-y-3">
+                  <div className="relative">
                     <input
                       type="url"
                       value={repoUrl}
@@ -386,24 +465,65 @@ export default function App() {
                       className="w-full bg-slate-950 border border-slate-700/80 rounded-lg px-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
                     />
                   </div>
-                  <button
-                    type="submit"
-                    disabled={analyzing}
-                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-3 rounded-lg text-sm flex items-center space-x-2 transition-all disabled:opacity-50 shadow-lg shadow-emerald-950"
-                  >
-                    {analyzing ? (
-                      <>
-                        <RefreshCw className="h-4 w-4 animate-spin" />
-                        <span>Analyzing with AI...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="h-4 w-4" />
-                        <span>Analyze & Plan</span>
-                      </>
-                    )}
-                  </button>
-                </form>
+
+                  <div className="flex flex-wrap gap-2.5">
+                    {/* Primary: 1-Click Auto Deploy (Zero Manual Config) */}
+                    <button
+                      type="button"
+                      onClick={handleAutoDeploy}
+                      disabled={autoDeploying || analyzing}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-6 py-2.5 rounded-lg text-sm flex items-center space-x-2 transition-all disabled:opacity-50 shadow-lg shadow-emerald-950"
+                    >
+                      {autoDeploying ? (
+                        <>
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          <span>Autonomously Deploying...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-4 w-4" />
+                          <span>1-Click Auto Deploy (Zero-Config)</span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* Secondary: Interactive Plan Review */}
+                    <button
+                      type="button"
+                      onClick={handleAnalyze}
+                      disabled={analyzing || autoDeploying}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium px-5 py-2.5 rounded-lg text-sm flex items-center space-x-2 transition-all disabled:opacity-50"
+                    >
+                      {analyzing ? (
+                        <>
+                          <RefreshCw className="h-4 w-4 animate-spin" />
+                          <span>Analyzing...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Eye className="h-4 w-4 text-slate-400" />
+                          <span>Inspect Plan First</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Automation Badges */}
+                <div className="flex flex-wrap gap-3 mt-4 pt-4 border-t border-slate-800 text-[11px] text-slate-400">
+                  <div className="flex items-center space-x-1.5">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Auto-Dockerfile Synthesizer</span>
+                  </div>
+                  <div className="flex items-center space-x-1.5">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Multi-Tenant DB Auto-Provisioning</span>
+                  </div>
+                  <div className="flex items-center space-x-1.5">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Autonomous Diagnostic Self-Healing</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -632,7 +752,7 @@ export default function App() {
                       <Terminal className="h-4 w-4 text-emerald-400" />
                       <span className="text-sm font-semibold text-white">Live Execution Stream</span>
                     </div>
-                    {deploying && (
+                    {(deploying || autoDeploying) && (
                       <span className="flex h-2 w-2 relative">
                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                         <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
@@ -707,35 +827,63 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {projects.map((p) => (
-                <div key={p.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 hover:border-slate-700 transition-all">
-                  <div className="flex items-start justify-between mb-3">
+              {projects.map((p) => {
+                const webhookUrl = `${window.location.origin}/api/webhooks/${p.id}`;
+
+                return (
+                  <div key={p.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 hover:border-slate-700 transition-all flex flex-col justify-between">
                     <div>
-                      <h3 className="font-semibold text-white text-base">{p.name}</h3>
-                      <span className="text-xs font-mono text-slate-400">{p.slug}</span>
+                      <div className="flex items-start justify-between mb-3">
+                        <div>
+                          <h3 className="font-semibold text-white text-base">{p.name}</h3>
+                          <span className="text-xs font-mono text-slate-400">{p.slug}</span>
+                        </div>
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px] uppercase font-mono">
+                          {p.status}
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-slate-400 truncate mb-3">{p.repoUrl}</p>
+
+                      {/* Push-to-Deploy Webhook Box */}
+                      <div className="bg-slate-950 border border-slate-800/80 rounded-lg p-2.5 mb-3">
+                        <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
+                          <span className="flex items-center space-x-1">
+                            <GitBranch className="h-3 w-3 text-emerald-400" />
+                            <span>Push-to-Deploy Webhook</span>
+                          </span>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(webhookUrl);
+                              setCopiedId(p.id);
+                              setTimeout(() => setCopiedId(null), 2000);
+                            }}
+                            className="text-emerald-400 hover:text-emerald-300 font-mono text-[10px] flex items-center space-x-1"
+                          >
+                            {copiedId === p.id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                            <span>{copiedId === p.id ? 'Copied' : 'Copy'}</span>
+                          </button>
+                        </div>
+                        <div className="font-mono text-[10px] text-slate-500 truncate">{webhookUrl}</div>
+                      </div>
                     </div>
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px] uppercase font-mono">
-                      {p.status}
-                    </span>
-                  </div>
 
-                  <p className="text-xs text-slate-400 truncate mb-4">{p.repoUrl}</p>
-
-                  <div className="flex items-center justify-between text-xs pt-3 border-t border-slate-800 text-slate-400">
-                    <span>{p.servicesCount} running services</span>
-                    <button
-                      onClick={() => {
-                        setRepoUrl(p.repoUrl);
-                        setActiveTab('deploy');
-                      }}
-                      className="text-emerald-400 hover:text-emerald-300 font-medium flex items-center space-x-1"
-                    >
-                      <span>Redeploy</span>
-                      <ChevronRight className="h-3.5 w-3.5" />
-                    </button>
+                    <div className="flex items-center justify-between text-xs pt-3 border-t border-slate-800 text-slate-400">
+                      <span>{p.servicesCount} running services</span>
+                      <button
+                        onClick={() => {
+                          setRepoUrl(p.repoUrl);
+                          setActiveTab('deploy');
+                        }}
+                        className="text-emerald-400 hover:text-emerald-300 font-medium flex items-center space-x-1"
+                      >
+                        <span>Redeploy</span>
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -909,6 +1057,68 @@ export default function App() {
                             SSL ACTIVE (Let's Encrypt)
                           </span>
                         </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 5: AUTOMATED BACKUPS */}
+        {activeTab === 'backups' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-white">Automated Database Backups</h2>
+                <p className="text-xs text-slate-400">
+                  Daily automated snapshots of shared PostgreSQL tenant databases and SQLite state with automatic 7-day retention.
+                </p>
+              </div>
+              <button
+                onClick={handleRunBackup}
+                disabled={runningBackup}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium px-4 py-2 rounded-lg flex items-center space-x-1.5 disabled:opacity-50"
+              >
+                {runningBackup ? (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    <span>Backing up...</span>
+                  </>
+                ) : (
+                  <>
+                    <Archive className="h-3.5 w-3.5" />
+                    <span>Backup Now</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold">Snapshot Name</th>
+                    <th className="px-4 py-3 font-semibold">Database Type</th>
+                    <th className="px-4 py-3 font-semibold">Size</th>
+                    <th className="px-4 py-3 font-semibold">Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {backups.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-4 py-6 text-center text-slate-500">
+                        No backup archives generated yet. Click "Backup Now" to create an instant snapshot.
+                      </td>
+                    </tr>
+                  ) : (
+                    backups.map((b) => (
+                      <tr key={b.id} className="hover:bg-slate-800/40">
+                        <td className="px-4 py-3 font-mono font-medium text-emerald-400">{b.name}</td>
+                        <td className="px-4 py-3 uppercase text-slate-300">{b.type}</td>
+                        <td className="px-4 py-3 text-slate-400 font-mono">{(b.sizeBytes / 1024).toFixed(1)} KB</td>
+                        <td className="px-4 py-3 text-slate-400">{new Date(b.createdAt).toLocaleString()}</td>
                       </tr>
                     ))
                   )}

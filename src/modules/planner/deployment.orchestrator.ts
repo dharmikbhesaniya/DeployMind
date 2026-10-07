@@ -8,6 +8,8 @@ import { resourceManager } from '../resources/resource.manager.js';
 import { dockerService } from '../docker/docker.service.js';
 import { proxyService } from '../proxy/proxy.service.js';
 import { healthObserver } from '../health/health.observer.js';
+import { diagnosticHealer } from '../health/diagnostic.healer.js';
+import { dockerfileSynthesizer } from '../builder/dockerfile.synthesizer.js';
 import { eventBus } from '../../core/events.js';
 import type { DeploymentPlan } from '../../core/types.js';
 
@@ -44,7 +46,6 @@ export class DeploymentOrchestrator {
         updatedAt: Date.now(),
       });
     } else {
-      // Use existing project ID
       projectId = project.id;
     }
 
@@ -58,6 +59,21 @@ export class DeploymentOrchestrator {
 
     // Run static AST & manifest analyzer
     const manifest = await repoAnalyzer.analyzeRepository(repoUrl);
+
+    // If no Dockerfile exists, autonomously synthesize one!
+    if (!manifest.hasDockerfile && !manifest.hasCompose) {
+      eventBus.emitLog({
+        deploymentId,
+        timestamp: Date.now(),
+        level: 'info',
+        stage: 'plan',
+        message: `[Auto-Builder] Repository lacks Dockerfile. Autonomously synthesizing production multi-stage Dockerfile for ${manifest.primaryRuntime || 'Node'}...`,
+      });
+
+      const generatedDockerfile = dockerfileSynthesizer.synthesizeDockerfile(manifest);
+      manifest.hasDockerfile = true;
+      manifest.dockerfileContent = generatedDockerfile;
+    }
 
     eventBus.emitLog({
       deploymentId,
@@ -175,6 +191,20 @@ export class DeploymentOrchestrator {
             targetEnvVar: v.key,
             vaultCredentialId: cred.id,
           });
+        } else if (decision.action === 'auto_generate') {
+          // Autonomous fallback generation for zero-touch deploys
+          const val = vaultService.generateRandomSecret('hex32');
+          const cred = await vaultService.createCredential({
+            keyName: v.key,
+            plaintextValue: val,
+            description: `Auto-synthesized key for ${v.key}`,
+            isSystemGenerated: true,
+          });
+          await vaultService.bindCredentialToProject({
+            projectId,
+            targetEnvVar: v.key,
+            vaultCredentialId: cred.id,
+          });
         }
       } else if (v.defaultValue) {
         const cred = await vaultService.createCredential({
@@ -249,13 +279,26 @@ export class DeploymentOrchestrator {
       targetUpstream: `${containerName}:${plan.exposedPort}`,
     });
 
-    // 5. Health Check Probes
-    await healthObserver.probeAndHeal({
+    // 5. Health Check Probes & Autonomous Diagnostic Healer
+    const healthResult = await healthObserver.probeAndHeal({
       deploymentId: params.deploymentId,
       containerName,
       port: plan.exposedPort,
       migrationCommand: plan.migrationCommand,
     });
+
+    if (!healthResult.healthy) {
+      // Trigger Autonomous Diagnostic Healer
+      await diagnosticHealer.diagnoseAndRemediate({
+        deploymentId: params.deploymentId,
+        projectId,
+        serviceId,
+        containerName,
+        hostname,
+        configuredPort: plan.exposedPort,
+        migrationCommand: plan.migrationCommand,
+      });
+    }
 
     // Mark deployment as healthy
     await db
@@ -276,6 +319,45 @@ export class DeploymentOrchestrator {
       liveUrl: `https://${hostname}`,
     };
   }
+
+  // 1-Click Zero-Touch Autonomous Deployment:
+  // User passes URL only. Entire pipeline runs from analysis to live production without manual input!
+  async autoDeploy(repoUrl: string, projectName?: string): Promise<{
+    projectId: string;
+    deploymentId: string;
+    liveUrl: string;
+    plan: DeploymentPlan;
+  }> {
+    const { projectId, deploymentId, plan } = await this.analyzeAndPlan(repoUrl, projectName);
+
+    // Auto-synthesize decisions for every detected variable
+    const autoDecisions: VariableDecision[] = plan.environmentVariables.map((v) => {
+      if (v.matchingVaultCredentialId) {
+        return {
+          key: v.key,
+          action: 'use_existing',
+          vaultCredentialId: v.matchingVaultCredentialId,
+        };
+      }
+      return {
+        key: v.key,
+        action: 'auto_generate',
+      };
+    });
+
+    const execution = await this.executeDeployment({
+      deploymentId,
+      variableDecisions: autoDecisions,
+    });
+
+    return {
+      projectId,
+      deploymentId,
+      liveUrl: execution.liveUrl,
+      plan,
+    };
+  }
 }
 
 export const deploymentOrchestrator = new DeploymentOrchestrator();
+

@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, or } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { config } from '../../config/index.js';
 import { CaddyAdapter } from './caddy.adapter.js';
@@ -37,8 +37,15 @@ export class ProxyService {
       sslActive: true,
     };
 
-    // Remove existing domain record if any
-    await db.delete(schema.domains).where(eq(schema.domains.serviceId, params.serviceId));
+    // Remove existing domain record if any by serviceId or hostname
+    await db
+      .delete(schema.domains)
+      .where(
+        or(
+          eq(schema.domains.serviceId, params.serviceId),
+          eq(schema.domains.hostname, params.hostname)
+        )
+      );
 
     // Register with active proxy daemon
     await adapter.registerRoute(route);
