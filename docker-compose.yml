@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  deployagent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: deployagent-monolith
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+      - PROXY_PROVIDER=caddy
+      - CADDY_API_URL=http://caddy:2019
+      - BASE_DOMAIN=localhost
+      - DOCKER_SOCKET_PATH=/var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - deployagent_data:/var/lib/deployagent
+    networks:
+      - deployagent-net
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: deployagent-caddy
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '2019:2019'
+    volumes:
+      - ./ingress/caddy/Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - deployagent-net
+
+networks:
+  deployagent-net:
+    name: deployagent-net
+    driver: bridge
+
+volumes:
+  deployagent_data:
+  caddy_data:
+  caddy_config:

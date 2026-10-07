@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.data/
+.env
+.env.local
+*.log
+
+# Web build
+web/node_modules/
+web/dist/
+
+# OS files
+.DS_Store
+Thumbs.db
