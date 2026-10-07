@@ -9,7 +9,7 @@ export interface DeploymentLogEvent {
   details?: unknown;
 }
 
-class DeployAgentEventBus extends EventEmitter {
+class DeployMindEventBus extends EventEmitter {
   emitLog(log: DeploymentLogEvent): void {
     this.emit('deployment:log', log);
   }
@@ -19,4 +19,4 @@ class DeployAgentEventBus extends EventEmitter {
   }
 }
 
-export const eventBus = new DeployAgentEventBus();
+export const eventBus = new DeployMindEventBus();

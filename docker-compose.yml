@@ -1,11 +1,11 @@
 version: '3.8'
 
 services:
-  deployagent:
+  deploymind:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: deployagent-monolith
+    container_name: deploymind-monolith
     restart: unless-stopped
     ports:
       - '3000:3000'
@@ -19,13 +19,13 @@ services:
       - DOCKER_SOCKET_PATH=/var/run/docker.sock
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - deployagent_data:/var/lib/deployagent
+      - deploymind_data:/var/lib/deploymind
     networks:
-      - deployagent-net
+      - deploymind-net
 
   caddy:
     image: caddy:2-alpine
-    container_name: deployagent-caddy
+    container_name: deploymind-caddy
     restart: unless-stopped
     ports:
       - '80:80'
@@ -36,14 +36,14 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     networks:
-      - deployagent-net
+      - deploymind-net
 
 networks:
-  deployagent-net:
-    name: deployagent-net
+  deploymind-net:
+    name: deploymind-net
     driver: bridge
 
 volumes:
-  deployagent_data:
+  deploymind_data:
   caddy_data:
   caddy_config:

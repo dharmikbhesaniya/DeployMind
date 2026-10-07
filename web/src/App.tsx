@@ -373,7 +373,7 @@ export default function App() {
           </div>
           <div>
             <div className="flex items-center space-x-2">
-              <span className="font-bold text-lg tracking-tight text-white">DeployAgent</span>
+              <span className="font-bold text-lg tracking-tight text-white">DeployMind</span>
               <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">
                 AI MONOLITH
               </span>

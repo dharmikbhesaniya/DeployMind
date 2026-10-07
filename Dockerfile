@@ -30,7 +30,7 @@ RUN apk add --no-cache git docker-cli curl
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOST=0.0.0.0
-ENV DEPLOYAGENT_DATA_DIR=/var/lib/deployagent
+ENV DEPLOYMIND_DATA_DIR=/var/lib/deploymind
 
 # Copy production artifacts
 COPY package*.json ./
@@ -39,7 +39,7 @@ RUN npm ci --only=production
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/web/dist ./web/dist
 
-VOLUME ["/var/lib/deployagent", "/var/run/docker.sock"]
+VOLUME ["/var/lib/deploymind", "/var/run/docker.sock"]
 
 EXPOSE 3000
 

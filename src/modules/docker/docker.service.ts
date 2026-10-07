@@ -3,7 +3,7 @@ import { config } from '../../config/index.js';
 
 export class DockerService {
   private docker: Docker;
-  readonly networkName = 'deployagent-net';
+  readonly networkName = 'deploymind-net';
 
   constructor() {
     this.docker = new Docker({ socketPath: config.docker.socketPath });

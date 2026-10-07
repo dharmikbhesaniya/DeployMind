@@ -1,7 +1,7 @@
 {
-  "name": "deployagent",
+  "name": "deploymind",
   "version": "0.1.0",
-  "description": "Open-Source AI-First Autonomous Deployment Platform",
+  "description": "DeployMind - Open-Source AI-First Autonomous Deployment Platform",
   "main": "dist/main.js",
   "type": "module",
   "scripts": {
@@ -21,7 +21,7 @@
     "traefik",
     "paas"
   ],
-  "author": "DeployAgent Contributors",
+  "author": "DeployMind Contributors",
   "license": "Apache-2.0",
   "dependencies": {
     "@fastify/cors": "^10.0.2",

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo "=================================================="
-echo "    DeployAgent VPS Installer (Open-Source)       "
+echo "    DeployMind VPS Installer (Open-Source)        "
 echo "=================================================="
 
 # Check Docker installation
@@ -13,36 +13,36 @@ if ! command -v docker &> /dev/null; then
 fi
 
 # Create persistent storage directories
-mkdir -p /var/lib/deployagent/caddy
+mkdir -p /var/lib/deploymind/caddy
 
-echo "Pulling and launching DeployAgent..."
+echo "Pulling and launching DeployMind..."
 
-docker network create deployagent-net 2>/dev/null || true
+docker network create deploymind-net 2>/dev/null || true
 
 # Run Caddy Ingress Container
 docker run -d \
-  --name deployagent-caddy \
+  --name deploymind-caddy \
   --restart unless-stopped \
-  --network deployagent-net \
+  --network deploymind-net \
   -p 80:80 \
   -p 443:443 \
   -p 127.0.0.1:2019:2019 \
-  -v /var/lib/deployagent/caddy:/data \
+  -v /var/lib/deploymind/caddy:/data \
   caddy:2-alpine
 
-# Run DeployAgent Monolith Container
+# Run DeployMind Monolith Container
 docker run -d \
-  --name deployagent \
+  --name deploymind \
   --restart unless-stopped \
-  --network deployagent-net \
+  --network deploymind-net \
   -p 3000:3000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /var/lib/deployagent:/var/lib/deployagent \
+  -v /var/lib/deploymind:/var/lib/deploymind \
   -e PORT=3000 \
   -e PROXY_PROVIDER=caddy \
-  -e CADDY_API_URL=http://deployagent-caddy:2019 \
-  deployagent/deployagent:latest
+  -e CADDY_API_URL=http://deploymind-caddy:2019 \
+  deploymind/deploymind:latest
 
 echo ""
-echo "DeployAgent is running at http://$(curl -s ifconfig.me):3000"
+echo "DeployMind is running at http://$(curl -s ifconfig.me):3000"
 echo "Open the dashboard to deploy your first repository!"

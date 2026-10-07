@@ -4,5 +4,5 @@
 }
 
 :80 {
-  respond "DeployAgent Caddy Ingress Gateway Online" 200
+  respond "DeployMind Caddy Ingress Gateway Online" 200
 }

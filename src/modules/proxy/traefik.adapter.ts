@@ -10,7 +10,7 @@ export class TraefikAdapter implements ProxyAdapter {
 
   constructor() {
     this.dynamicDir = config.proxy.traefikDynamicDir;
-    this.routesFile = path.join(this.dynamicDir, 'deployagent_routes.json');
+    this.routesFile = path.join(this.dynamicDir, 'deploymind_routes.json');
     this.ensureDirectory();
   }
 

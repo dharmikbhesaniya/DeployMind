@@ -9,8 +9,8 @@ export interface TenantCredentials {
 }
 
 export class ResourceManager {
-  readonly sharedPostgresName = 'deployagent-shared-postgres';
-  readonly sharedRedisName = 'deployagent-shared-redis';
+  readonly sharedPostgresName = 'deploymind-shared-postgres';
+  readonly sharedRedisName = 'deploymind-shared-redis';
 
   // Ensures shared PostgreSQL cluster is available on the network
   async ensureSharedPostgres(): Promise<void> {
@@ -22,8 +22,8 @@ export class ResourceManager {
         containerName: this.sharedPostgresName,
         imageTag: 'postgres:16-alpine',
         env: {
-          POSTGRES_USER: 'deployagent_admin',
-          POSTGRES_PASSWORD: 'deployagent_secure_pass',
+          POSTGRES_USER: 'deploymind_admin',
+          POSTGRES_PASSWORD: 'deploymind_secure_pass',
           POSTGRES_DB: 'postgres',
         },
         exposedPort: 5432,
@@ -77,7 +77,7 @@ export class ResourceManager {
       await dockerService.execCommand(this.sharedPostgresName, [
         'psql',
         '-U',
-        'deployagent_admin',
+        'deploymind_admin',
         '-d',
         'postgres',
         '-c',

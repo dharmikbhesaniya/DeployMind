@@ -25,7 +25,7 @@ describe('DeployAgent Monolith REST API Endpoints', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.payload);
     expect(body.status).toBe('operational');
-    expect(body.engine).toBe('DeployAgent Modular Monolith');
+    expect(body.engine).toBe('DeployMind Modular Monolith');
     expect(body.proxy).toBeDefined();
   });
 

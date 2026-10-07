@@ -1,7 +1,7 @@
-# DeployAgent 🚀
+# DeployMind 🚀
 
 > **Open-Source AI-First Autonomous Deployment Platform**  
-> Paste any Git repository URL. DeployAgent inspects the codebase, extracts setup directives from the README, provisions shared databases, synthesizes environment variables, and configures reverse proxy ingress with automatic SSL.
+> Paste any Git repository URL. DeployMind inspects the codebase, extracts setup directives from the README, provisions shared databases, synthesizes environment variables, and configures reverse proxy ingress with automatic SSL.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/architecture-Modular%20Monolith-emerald.svg)](docs/ARCHITECTURE_AND_DESIGN.md)
@@ -9,11 +9,11 @@
 
 ---
 
-## What Makes DeployAgent Different?
+## What Makes DeployMind Different?
 
 Traditional self-hosted PaaS solutions (like Coolify, Dokploy, and CapRover) require engineers to manually populate environment variables, set up ports, build dockerfiles, and link databases.
 
-DeployAgent replaces manual configuration with an **autonomous AI reasoning pipeline**:
+DeployMind replaces manual configuration with an **autonomous AI reasoning pipeline**:
 
 1. **Zero-Config URL Ingestion:** Provide any Git repository URL.
 2. **Semantic README Parsing:** Extracts runtime dependencies, configuration parameters, and installation commands from project documentation.
@@ -21,12 +21,13 @@ DeployAgent replaces manual configuration with an **autonomous AI reasoning pipe
 4. **Reusable Credential Vault:** Automatically detects matching credentials (e.g., `OPENAI_API_KEY`) from prior projects. Cleanly manages duplicate key names using descriptive labels and scoping.
 5. **Pluggable Ingress Engine:** Programs **Caddy** (dynamic JSON REST API) or **Traefik** for instant routing and automatic Let's Encrypt SSL.
 6. **Diagnostic Auto-Healing:** Analyzes startup logs to detect missing database migrations or mismatched ports and automatically applies remediation.
+7. **Production Runtime Hierarchy:** Priority 1 runs in Docker container; Priority 2 fallback runs directly on host in strict production mode with RAM & storage optimizations.
 
 ---
 
 ## Architecture: The Modular Monolith
 
-DeployAgent is built as a single, unified container designed to run on any VPS:
+DeployMind is built as a single, unified container designed to run on any VPS:
 
 * **Backend:** Node.js 22 LTS, TypeScript, Fastify, Dockerode.
 * **Database:** Embedded SQLite with Write-Ahead Logging (WAL) via Drizzle ORM.
@@ -42,8 +43,8 @@ Read the complete [High-Level and Low-Level Design (HLD/LLD)](docs/ARCHITECTURE_
 ### 1. Run with Docker Compose
 
 ```bash
-git clone https://github.com/deployagent/deployagent.git
-cd deployagent
+git clone https://github.com/dharmikbhesaniya/DeployMind.git
+cd DeployMind
 docker compose up -d
 ```
 
@@ -75,8 +76,8 @@ npm test
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `PORT` | `3000` | Port for the DeployAgent monolith HTTP server |
-| `DEPLOYAGENT_DATA_DIR` | `.data` | Directory for SQLite database and encryption keys |
+| `PORT` | `3000` | Port for the DeployMind monolith HTTP server |
+| `DEPLOYMIND_DATA_DIR` | `.data` | Directory for SQLite database and encryption keys |
 | `PROXY_PROVIDER` | `caddy` | Ingress driver: `caddy` or `traefik` |
 | `CADDY_API_URL` | `http://127.0.0.1:2019` | Dynamic admin API URL for Caddy |
 | `BASE_DOMAIN` | `localhost` | Base domain for generating application subdomains |

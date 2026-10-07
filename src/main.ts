@@ -3,7 +3,7 @@ import { createServer } from './server/index.js';
 import { config } from './config/index.js';
 
 async function bootstrap() {
-  console.log('🚀 Initializing DeployAgent Modular Monolith...');
+  console.log('🚀 Initializing DeployMind Modular Monolith...');
   
   // Initialize embedded SQLite database with WAL mode
   initDatabase();
@@ -14,7 +14,7 @@ async function bootstrap() {
 
   try {
     await server.listen({ port: config.port, host: config.host });
-    console.log(`🌐 DeployAgent running at http://${config.host}:${config.port}`);
+    console.log(`🌐 DeployMind running at http://${config.host}:${config.port}`);
     console.log(`🔌 Selected Ingress Proxy: ${config.proxy.provider.toUpperCase()}`);
     console.log(`🧠 AI Reasoner Provider: ${config.ai.provider.toUpperCase()} (${config.ai.model})`);
   } catch (err) {

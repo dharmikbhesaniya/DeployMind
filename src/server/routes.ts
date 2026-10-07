@@ -18,7 +18,7 @@ export async function registerRoutes(app: FastifyInstance) {
 
     return {
       status: 'operational',
-      engine: 'DeployAgent Modular Monolith',
+      engine: 'DeployMind Modular Monolith',
       version: '0.1.0',
       docker: isDocker ? 'connected' : 'offline',
       proxy: {

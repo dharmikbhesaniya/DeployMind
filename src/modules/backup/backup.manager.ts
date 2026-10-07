@@ -33,7 +33,7 @@ export class BackupManager {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 
     // 1. Backup internal SQLite database
-    const sqliteTarget = path.join(this.backupDir, `sqlite-deployagent-${timestamp}.db`);
+    const sqliteTarget = path.join(this.backupDir, `sqlite-deploymind-${timestamp}.db`);
     try {
       await sqlite.backup(sqliteTarget);
       const stat = fs.statSync(sqliteTarget);
@@ -54,8 +54,8 @@ export class BackupManager {
       const pgTarget = path.join(this.backupDir, `postgres-shared-${timestamp}.sql`);
       try {
         const { exitCode, output } = await dockerService.execCommand(
-          'deployagent-shared-postgres',
-          ['pg_dumpall', '-U', 'deployagent_admin']
+          'deploymind-shared-postgres',
+          ['pg_dumpall', '-U', 'deploymind_admin']
         );
         if (exitCode === 0 && output.length > 0) {
           fs.writeFileSync(pgTarget, output, 'utf8');

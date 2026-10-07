@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const DATA_DIR = process.env.DEPLOYAGENT_DATA_DIR || path.resolve(process.cwd(), '.data');
+const DATA_DIR = process.env.DEPLOYMIND_DATA_DIR || process.env.DEPLOYAGENT_DATA_DIR || path.resolve(process.cwd(), '.data');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -13,8 +13,9 @@ if (!fs.existsSync(DATA_DIR)) {
 
 // Master encryption key for AES-256-GCM vault
 function resolveMasterKey(): Buffer {
-  if (process.env.DEPLOYAGENT_MASTER_KEY) {
-    const raw = process.env.DEPLOYAGENT_MASTER_KEY;
+  const masterKeyEnv = process.env.DEPLOYMIND_MASTER_KEY || process.env.DEPLOYAGENT_MASTER_KEY;
+  if (masterKeyEnv) {
+    const raw = masterKeyEnv;
     return raw.length === 64
       ? Buffer.from(raw, 'hex')
       : crypto.createHash('sha256').update(raw).digest();
@@ -35,7 +36,7 @@ export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   host: process.env.HOST || '0.0.0.0',
   dataDir: DATA_DIR,
-  dbPath: process.env.DEPLOYAGENT_DB_PATH || path.join(DATA_DIR, 'deployagent.sqlite'),
+  dbPath: process.env.DEPLOYMIND_DB_PATH || process.env.DEPLOYAGENT_DB_PATH || path.join(DATA_DIR, 'deploymind.sqlite'),
   masterKey: resolveMasterKey(),
 
   docker: {
