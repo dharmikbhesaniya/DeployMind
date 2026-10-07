@@ -1,5 +1,8 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { eq } from 'drizzle-orm';
+import { config } from '../../config/index.js';
 import { db, schema } from '../../db/index.js';
 import { repoAnalyzer } from '../analyzer/repo.analyzer.js';
 import { aiReasoner } from '../ai/ai.reasoner.js';
@@ -10,6 +13,7 @@ import { proxyService } from '../proxy/proxy.service.js';
 import { healthObserver } from '../health/health.observer.js';
 import { diagnosticHealer } from '../health/diagnostic.healer.js';
 import { dockerfileSynthesizer } from '../builder/dockerfile.synthesizer.js';
+import { nativeRunner } from '../native-runner/native.runner.js';
 import { eventBus } from '../../core/events.js';
 import type { DeploymentPlan } from '../../core/types.js';
 
@@ -57,10 +61,75 @@ export class DeploymentOrchestrator {
       message: `Analyzing repository: ${repoUrl}`,
     });
 
-    // Run static AST & manifest analyzer
-    const manifest = await repoAnalyzer.analyzeRepository(repoUrl);
+    const repoCheckoutDir = path.join(config.dataDir, 'repos', projectId);
 
-    // If no Dockerfile exists, autonomously synthesize one!
+    // Run static AST & manifest analyzer
+    const manifest = await repoAnalyzer.analyzeRepository(repoUrl, 'main', repoCheckoutDir);
+
+    // Deep README inspection & understanding
+    if (manifest.readmeAnalysis) {
+      eventBus.emitLog({
+        deploymentId,
+        timestamp: Date.now(),
+        level: 'info',
+        stage: 'analyze',
+        message: `[README Understanding] ${manifest.readmeAnalysis.projectOverview}`,
+      });
+      eventBus.emitLog({
+        deploymentId,
+        timestamp: Date.now(),
+        level: 'info',
+        stage: 'analyze',
+        message: `[Architecture & Workflow] ${manifest.readmeAnalysis.howItWorks}`,
+      });
+      eventBus.emitLog({
+        deploymentId,
+        timestamp: Date.now(),
+        level: 'info',
+        stage: 'analyze',
+        message: `[Setup Instructions] Workflow: ${manifest.readmeAnalysis.setupWorkflow.join(' -> ')}`,
+      });
+      if (manifest.readmeAnalysis.detectedBuildCommand) {
+        eventBus.emitLog({
+          deploymentId,
+          timestamp: Date.now(),
+          level: 'info',
+          stage: 'analyze',
+          message: `[Detected Production Build] ${manifest.readmeAnalysis.detectedBuildCommand}`,
+        });
+      }
+      if (manifest.readmeAnalysis.detectedStartCommand) {
+        eventBus.emitLog({
+          deploymentId,
+          timestamp: Date.now(),
+          level: 'info',
+          stage: 'analyze',
+          message: `[Detected Production Start] ${manifest.readmeAnalysis.detectedStartCommand}`,
+        });
+      }
+    }
+
+    // Check Docker daemon availability to set runtime strategy
+    const isDockerOnline = await dockerService.isAvailable();
+    if (isDockerOnline) {
+      eventBus.emitLog({
+        deploymentId,
+        timestamp: Date.now(),
+        level: 'info',
+        stage: 'plan',
+        message: `[Runtime Selection: Priority 1 - Docker] Docker daemon is online and responsive. Containerized isolation enabled.`,
+      });
+    } else {
+      eventBus.emitLog({
+        deploymentId,
+        timestamp: Date.now(),
+        level: 'warn',
+        stage: 'plan',
+        message: `[Runtime Selection: Priority 2 - Native Host Fallback] Docker is offline or not installed. Repository will run directly on host in STRICT PRODUCTION MODE (optimizing CPU, RAM, and disk storage).`,
+      });
+    }
+
+    // If no Dockerfile exists and Docker is online, autonomously synthesize one!
     if (!manifest.hasDockerfile && !manifest.hasCompose) {
       eventBus.emitLog({
         deploymentId,
@@ -73,6 +142,16 @@ export class DeploymentOrchestrator {
       const generatedDockerfile = dockerfileSynthesizer.synthesizeDockerfile(manifest);
       manifest.hasDockerfile = true;
       manifest.dockerfileContent = generatedDockerfile;
+
+      // Persist synthesized Dockerfile to repo directory if it exists
+      try {
+        const dockerfilePath = path.join(repoCheckoutDir, 'Dockerfile');
+        if (!fs.existsSync(dockerfilePath)) {
+          fs.writeFileSync(dockerfilePath, generatedDockerfile, 'utf8');
+        }
+      } catch {
+        // Non-fatal
+      }
     }
 
     eventBus.emitLog({
@@ -85,6 +164,7 @@ export class DeploymentOrchestrator {
 
     // Run AI plan synthesis
     const plan = await aiReasoner.synthesizeDeploymentPlan(manifest, derivedName);
+    plan.runtimeStrategy = isDockerOnline ? 'docker_priority' : 'native_production';
 
     // Save deployment record in DB
     await db.insert(schema.deployments).values({
@@ -119,7 +199,9 @@ export class DeploymentOrchestrator {
     if (!dep) throw new Error(`Deployment ${params.deploymentId} not found`);
 
     const plan: DeploymentPlan = JSON.parse(dep.deploymentPlan);
+    const rawManifest: any = dep.rawManifest ? JSON.parse(dep.rawManifest) : {};
     const projectId = dep.projectId;
+    const sourceDir = rawManifest.checkoutDir || path.join(config.dataDir, 'repos', projectId);
 
     await db
       .update(schema.deployments)
@@ -223,29 +305,57 @@ export class DeploymentOrchestrator {
     // 2. Fetch all decrypted variables
     const resolvedEnv = await vaultService.resolveProjectVariables(projectId);
 
-    // 3. Start container
+    // 3. Start container or native host runner
     const containerName = `app_${projectId.replace(/[^a-zA-Z0-9]/g, '_')}`;
     const serviceId = `srv_${crypto.randomUUID()}`;
 
-    eventBus.emitLog({
-      deploymentId: params.deploymentId,
-      timestamp: Date.now(),
-      level: 'info',
-      stage: 'build',
-      message: `Configuring container ${containerName}...`,
-    });
-
     const isDockerAvailable = await dockerService.isAvailable();
     let containerId = 'simulated_container_id';
+    let targetUpstream = '';
 
     if (isDockerAvailable) {
+      // PRIORITY 1: DOCKER CONTAINER RUNTIME
+      eventBus.emitLog({
+        deploymentId: params.deploymentId,
+        timestamp: Date.now(),
+        level: 'info',
+        stage: 'deploy',
+        message: `[Runtime Priority 1: Docker] Launching containerized application ${containerName} (isolated network, CPU & memory limits)...`,
+      });
+
       const res = await dockerService.startContainer({
         containerName,
-        imageTag: 'node:22-alpine', // Or built image
+        imageTag: 'node:22-alpine',
         env: resolvedEnv,
         exposedPort: plan.exposedPort,
+        memoryLimitMb: 1024,
+        cpuLimit: 1,
       });
       containerId = res.containerId;
+      targetUpstream = `${containerName}:${plan.exposedPort}`;
+    } else {
+      // PRIORITY 2: NATIVE HOST RUNNER IN STRICT PRODUCTION MODE
+      eventBus.emitLog({
+        deploymentId: params.deploymentId,
+        timestamp: Date.now(),
+        level: 'warn',
+        stage: 'deploy',
+        message: `[Docker Offline] Priority 1 bypassed. Executing directly on host in STRICT PRODUCTION MODE (resource and storage optimized)...`,
+      });
+
+      // Prepare native host production app directory from repository checkout
+      const procInfo = await nativeRunner.startProductionApp({
+        deploymentId: params.deploymentId,
+        projectId,
+        sourceDir,
+        env: resolvedEnv,
+        port: plan.exposedPort,
+        runtime: plan.runtime,
+        buildCommand: plan.migrationCommand,
+        startCommand: plan.entrypointCommand,
+      });
+      containerId = `pid_${procInfo.pid}`;
+      targetUpstream = `127.0.0.1:${plan.exposedPort}`;
     }
 
     // Record Service
@@ -254,7 +364,7 @@ export class DeploymentOrchestrator {
       projectId,
       name: 'web',
       containerId,
-      imageTag: 'node:22-alpine',
+      imageTag: isDockerAvailable ? 'docker:containerized' : 'native-host:strict-production',
       internalPort: plan.exposedPort,
       desiredState: 'running',
       actualState: 'running',
@@ -270,13 +380,13 @@ export class DeploymentOrchestrator {
       timestamp: Date.now(),
       level: 'info',
       stage: 'route',
-      message: `Registering reverse proxy route for ${hostname}...`,
+      message: `Registering reverse proxy route for ${hostname} -> ${targetUpstream}...`,
     });
 
     await proxyService.registerServiceRoute({
       serviceId,
       hostname,
-      targetUpstream: `${containerName}:${plan.exposedPort}`,
+      targetUpstream,
     });
 
     // 5. Health Check Probes & Autonomous Diagnostic Healer

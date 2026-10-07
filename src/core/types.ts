@@ -49,6 +49,18 @@ export const DeploymentPlanSchema = z.object({
       reason: z.string(),
     })
   ),
+  runtimeStrategy: z.enum(['docker_priority', 'native_production']).default('docker_priority'),
+  readmeSummary: z
+    .object({
+      projectOverview: z.string().default(''),
+      howItWorks: z.string().default(''),
+      setupWorkflow: z.array(z.string()).default([]),
+      detectedBuildCommand: z.string().optional(),
+      detectedStartCommand: z.string().optional(),
+      detectedPort: z.number().optional(),
+      detectedMigrationCommand: z.string().optional(),
+    })
+    .optional(),
   suggestedSubdomain: z.string(),
   volumes: z.array(
     z.object({

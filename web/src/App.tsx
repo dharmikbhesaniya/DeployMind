@@ -22,7 +22,9 @@ import {
   GitBranch,
   Wand2,
   Copy,
-  Check
+  Check,
+  Cpu,
+  FileText
 } from 'lucide-react';
 
 interface Project {
@@ -48,6 +50,16 @@ interface DeploymentPlan {
   projectName: string;
   framework: string;
   runtime: string;
+  runtimeStrategy?: 'docker_priority' | 'native_production';
+  readmeSummary?: {
+    projectOverview: string;
+    howItWorks: string;
+    setupWorkflow: string[];
+    detectedBuildCommand?: string;
+    detectedStartCommand?: string;
+    detectedPort?: number;
+    detectedMigrationCommand?: string;
+  };
   exposedPort: number;
   healthCheckPath: string;
   migrationCommand?: string;
@@ -543,6 +555,79 @@ export default function App() {
                         Port {planResult.plan.exposedPort}
                       </span>
                     </div>
+
+                    {/* Priority 1 vs Priority 2 Runtime Strategy Banner */}
+                    <div className={`mb-4 p-3 rounded-lg border text-xs flex items-center justify-between ${
+                      planResult.plan.runtimeStrategy === 'docker_priority'
+                        ? 'bg-blue-950/30 border-blue-800/60 text-blue-300'
+                        : 'bg-amber-950/30 border-amber-800/60 text-amber-300'
+                    }`}>
+                      <div className="flex items-center space-x-2.5">
+                        <Cpu className="h-4 w-4 flex-shrink-0" />
+                        <div>
+                          <span className="font-semibold uppercase tracking-wider block">
+                            {planResult.plan.runtimeStrategy === 'docker_priority'
+                              ? 'Runtime: Priority 1 - Docker Container'
+                              : 'Runtime: Priority 2 Fallback - Native Host (Strict Production)'}
+                          </span>
+                          <span className="text-[11px] text-slate-400">
+                            {planResult.plan.runtimeStrategy === 'docker_priority'
+                              ? 'Full container network isolation, 1024MB RAM & 1 CPU constraints.'
+                              : 'Docker offline. Running directly in production mode; devDependencies pruned to maximize storage, RAM & CPU efficiency.'}
+                          </span>
+                        </div>
+                      </div>
+                      <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-bold ${
+                        planResult.plan.runtimeStrategy === 'docker_priority'
+                          ? 'bg-blue-900/60 text-blue-200 border border-blue-700'
+                          : 'bg-amber-900/60 text-amber-200 border border-amber-700'
+                      }`}>
+                        {planResult.plan.runtimeStrategy === 'docker_priority' ? 'ISOLATED' : 'STRICT PROD'}
+                      </span>
+                    </div>
+
+                    {/* README Semantic Understanding Section */}
+                    {planResult.plan.readmeSummary && (
+                      <div className="mb-4 bg-slate-950 border border-slate-800/80 rounded-lg p-3.5 text-xs space-y-2">
+                        <div className="flex items-center space-x-2 text-slate-300 font-semibold">
+                          <FileText className="h-3.5 w-3.5 text-emerald-400" />
+                          <span>README Semantic Understanding & Setup Workflow</span>
+                        </div>
+                        <p className="text-slate-400">{planResult.plan.readmeSummary.projectOverview}</p>
+                        {planResult.plan.readmeSummary.howItWorks && (
+                          <div className="bg-slate-900/80 p-2 rounded border border-slate-800 text-slate-300">
+                            <span className="text-slate-500 font-mono text-[10px] block uppercase">Architecture</span>
+                            {planResult.plan.readmeSummary.howItWorks}
+                          </div>
+                        )}
+                        {planResult.plan.readmeSummary.setupWorkflow && planResult.plan.readmeSummary.setupWorkflow.length > 0 && (
+                          <div>
+                            <span className="text-slate-500 font-mono text-[10px] block uppercase mb-1">Discovered Setup Steps</span>
+                            <div className="flex flex-wrap gap-1.5">
+                              {planResult.plan.readmeSummary.setupWorkflow.map((step, sIdx) => (
+                                <span key={sIdx} className="bg-slate-900 text-slate-300 px-2 py-0.5 rounded border border-slate-800 text-[11px]">
+                                  {step}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div className="flex flex-wrap gap-3 pt-1 text-[11px] text-slate-400">
+                          {planResult.plan.readmeSummary.detectedBuildCommand && (
+                            <div>
+                              <span className="text-slate-500">Production Build: </span>
+                              <code className="text-emerald-400 font-mono">{planResult.plan.readmeSummary.detectedBuildCommand}</code>
+                            </div>
+                          )}
+                          {planResult.plan.readmeSummary.detectedStartCommand && (
+                            <div>
+                              <span className="text-slate-500">Production Start: </span>
+                              <code className="text-emerald-400 font-mono">{planResult.plan.readmeSummary.detectedStartCommand}</code>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs mb-4">
                       <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">

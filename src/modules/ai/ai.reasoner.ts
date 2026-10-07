@@ -115,7 +115,7 @@ export class AIReasoner {
     }
 
     // Deterministic Rule-Engine Plan
-    const port = manifest.detectedPorts[0] || 3000;
+    const port = manifest.readmeAnalysis?.detectedPort || manifest.detectedPorts[0] || 3000;
     const slug = projectName.toLowerCase().replace(/[^a-z0-9]/g, '-');
 
     return {
@@ -129,14 +129,24 @@ export class AIReasoner {
         : 'nixpacks',
       exposedPort: port,
       healthCheckPath: '/',
-      entrypointCommand: undefined,
-      migrationCommand: fullText.includes('prisma')
+      entrypointCommand: manifest.readmeAnalysis?.detectedStartCommand || undefined,
+      migrationCommand: manifest.readmeAnalysis?.detectedMigrationCommand || (fullText.includes('prisma')
         ? 'npx prisma migrate deploy'
         : fullText.includes('drizzle')
         ? 'npm run db:push'
-        : undefined,
+        : undefined),
       environmentVariables: variables,
       requiredBackingServices,
+      runtimeStrategy: 'docker_priority',
+      readmeSummary: {
+        projectOverview: manifest.readmeAnalysis?.projectOverview || 'Application service discovered from repository.',
+        howItWorks: manifest.readmeAnalysis?.howItWorks || 'Autonomous lifecycle management with reverse proxy routing.',
+        setupWorkflow: manifest.readmeAnalysis?.setupWorkflow || ['Clone repository', 'Configure environment variables', 'Build production assets', 'Launch service'],
+        detectedBuildCommand: manifest.readmeAnalysis?.detectedBuildCommand,
+        detectedStartCommand: manifest.readmeAnalysis?.detectedStartCommand,
+        detectedPort: port,
+        detectedMigrationCommand: manifest.readmeAnalysis?.detectedMigrationCommand,
+      },
       suggestedSubdomain: `${slug}.${config.proxy.baseDomain}`,
       volumes: [],
       securityRisks: [],
@@ -209,6 +219,16 @@ Synthesize the final deployment plan. Return ONLY JSON conforming to:
       migrationCommand: parsed.migrationCommand || undefined,
       environmentVariables: fallbackVars,
       requiredBackingServices: fallbackServices,
+      runtimeStrategy: 'docker_priority',
+      readmeSummary: {
+        projectOverview: manifest.readmeAnalysis?.projectOverview || 'Application service discovered from repository.',
+        howItWorks: manifest.readmeAnalysis?.howItWorks || 'Autonomous lifecycle management with reverse proxy routing.',
+        setupWorkflow: manifest.readmeAnalysis?.setupWorkflow || ['Clone repository', 'Configure environment variables', 'Build production assets', 'Launch service'],
+        detectedBuildCommand: manifest.readmeAnalysis?.detectedBuildCommand,
+        detectedStartCommand: manifest.readmeAnalysis?.detectedStartCommand,
+        detectedPort: parsed.exposedPort || manifest.detectedPorts[0] || 3000,
+        detectedMigrationCommand: parsed.migrationCommand,
+      },
       suggestedSubdomain: `${slug}.${config.proxy.baseDomain}`,
       volumes: [],
       securityRisks: [],
