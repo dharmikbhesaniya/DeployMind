@@ -34,6 +34,11 @@ export class DockerService {
         return resolve({ success: false, error: `Dockerfile not found at ${dockerfile}` });
       }
 
+      const dockerBin =
+        ['docker', '/usr/local/bin/docker', '/opt/homebrew/bin/docker', '/usr/bin/docker'].find(
+          (p) => fs.existsSync(p) || p === 'docker'
+        ) || 'docker';
+
       const args = ['build', '-t', params.tag];
       if (params.dockerfilePath) {
         args.push('-f', params.dockerfilePath);
@@ -41,11 +46,17 @@ export class DockerService {
       args.push(params.contextDir);
 
       try {
-        const proc = spawn('docker', args, {
+        const proc = spawn(dockerBin, args, {
           cwd: params.contextDir,
           env: {
             ...process.env,
+            PATH: `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
             DOCKER_HOST: `unix://${config.docker.socketPath}`,
+            CI: 'true',
+            CSC_IDENTITY_AUTO_DISCOVERY: 'false',
+            CODE_SIGN_IDENTITY: '-',
+            CODE_SIGNING_REQUIRED: 'NO',
+            CODE_SIGNING_ALLOWED: 'NO',
           },
         });
 

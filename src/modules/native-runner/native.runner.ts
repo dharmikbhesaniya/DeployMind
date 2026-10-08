@@ -56,13 +56,21 @@ export class NativeRunner {
     // Copy source files excluding unnecessary dev/git directories to optimize disk storage
     this.copyProductionFiles(params.sourceDir, targetDir);
 
-    // Ensure strict production environment
+    // Ensure strict production environment with no codesign / no keychain access
     const prodEnv: Record<string, string> = {
       ...process.env,
       ...params.env,
       NODE_ENV: 'production',
       PORT: params.port.toString(),
       PYTHONUNBUFFERED: '1',
+      CI: 'true',
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false',
+      CSC_LINK: '',
+      CSC_KEY_PASSWORD: '',
+      CODE_SIGN_IDENTITY: '-',
+      CODE_SIGNING_REQUIRED: 'NO',
+      CODE_SIGNING_ALLOWED: 'NO',
+      ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: 'true',
     };
 
     // Install production dependencies & run build if applicable
@@ -206,9 +214,26 @@ export class NativeRunner {
       // 2. Run build if build script exists or custom command provided
       try {
         const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+        const isDesktopApp = Boolean(
+          pkg.dependencies?.electron ||
+          pkg.devDependencies?.electron ||
+          pkg.devDependencies?.['electron-builder']
+        );
+
         if (customBuild) {
           const parts = customBuild.split(' ');
           await this.runSubprocess(dir, parts[0], parts.slice(1), env);
+        } else if (isDesktopApp) {
+          eventBus.emitLog({
+            deploymentId,
+            timestamp: Date.now(),
+            level: 'info',
+            stage: 'build',
+            message: `[Native Runner] Desktop/Electron app detected: Bypassing desktop bundle packager to maintain local server security.`,
+          });
+          if (pkg.scripts?.['build:web']) {
+            await this.runSubprocess(dir, 'npm', ['run', 'build:web'], env);
+          }
         } else if (pkg.scripts?.build) {
           await this.runSubprocess(dir, 'npm', ['run', 'build'], env);
         }
@@ -277,10 +302,24 @@ export class NativeRunner {
 
     if (fs.existsSync(path.join(dir, 'package.json'))) {
       const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+      const isDesktopApp = Boolean(
+        pkg.dependencies?.electron ||
+        pkg.devDependencies?.electron
+      );
+
       if (pkg.scripts?.start) {
         return { command: 'npm', args: ['start'] };
       }
-      if (pkg.main && fs.existsSync(path.join(dir, pkg.main))) {
+      if (pkg.scripts?.preview) {
+        return { command: 'npm', args: ['run', 'preview', '--', '--host', '0.0.0.0', '--port', port.toString()] };
+      }
+      if (pkg.scripts?.['dev:ui']) {
+        return { command: 'npm', args: ['run', 'dev:ui', '--', '--host', '0.0.0.0', '--port', port.toString()] };
+      }
+      if (pkg.scripts?.dev) {
+        return { command: 'npm', args: ['run', 'dev', '--', '--host', '0.0.0.0', '--port', port.toString()] };
+      }
+      if (!isDesktopApp && pkg.main && fs.existsSync(path.join(dir, pkg.main))) {
         return { command: 'node', args: ['--max-old-space-size=512', pkg.main] };
       }
       if (fs.existsSync(path.join(dir, 'dist', 'main.js'))) {
@@ -307,12 +346,24 @@ export class NativeRunner {
 
   private runSubprocess(cwd: string, cmd: string, args: string[], env: Record<string, string>): Promise<void> {
     return new Promise((resolve, reject) => {
-      const p = spawn(cmd, args, { cwd, env, stdio: 'ignore' });
+      const mergedEnv = {
+        ...process.env,
+        ...env,
+        PATH: `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
+        CI: 'true',
+        CSC_IDENTITY_AUTO_DISCOVERY: 'false',
+        CSC_LINK: '',
+        CSC_KEY_PASSWORD: '',
+        CODE_SIGN_IDENTITY: '-',
+        CODE_SIGNING_REQUIRED: 'NO',
+        CODE_SIGNING_ALLOWED: 'NO',
+        ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: 'true',
+      };
+      const p = spawn(cmd, args, { cwd, env: mergedEnv, stdio: 'ignore' });
       p.on('close', (code) => {
         if (code === 0) resolve();
         else reject(new Error(`Command ${cmd} exited with code ${code}`));
       });
-      p.on('error', reject);
     });
   }
 
