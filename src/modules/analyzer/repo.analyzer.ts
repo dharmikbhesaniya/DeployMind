@@ -30,11 +30,28 @@ export class RepoAnalyzer {
   // Clones or accesses repository and extracts normalized manifest
   async analyzeRepository(repoUrl: string, branch = 'main', customTargetDir?: string): Promise<RepoManifestSnapshot> {
     const targetDir = customTargetDir || path.join(config.dataDir, 'repos', `repo_${Date.now()}`);
-    fs.mkdirSync(targetDir, { recursive: true });
-
     let commitHash = 'unknown';
 
-    if (repoUrl.startsWith('http://') || repoUrl.startsWith('https://')) {
+    // If target directory already exists, handle git pull or clean up
+    if (fs.existsSync(targetDir)) {
+      if (fs.existsSync(path.join(targetDir, '.git'))) {
+        try {
+          await execFileAsync('git', ['pull'], { cwd: targetDir, timeout: 60000 });
+          const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: targetDir });
+          commitHash = stdout.trim();
+        } catch {
+          fs.rmSync(targetDir, { recursive: true, force: true });
+          fs.mkdirSync(targetDir, { recursive: true });
+        }
+      } else {
+        fs.rmSync(targetDir, { recursive: true, force: true });
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+    } else {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+
+    if (commitHash === 'unknown' && (repoUrl.startsWith('http://') || repoUrl.startsWith('https://'))) {
       // Shallow clone repository with depth 1
       try {
         const gitArgs = branch && branch !== 'main'
@@ -47,17 +64,19 @@ export class RepoAnalyzer {
         const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: targetDir });
         commitHash = stdout.trim();
       } catch (cloneErr: any) {
-        // Retry with default branch if specific branch was rejected
+        // Retry with default branch if specific branch was rejected or failed
         let succeeded = false;
-        if (branch && branch !== 'main') {
-          try {
-            await execFileAsync('git', ['clone', '--depth', '1', repoUrl, targetDir], { timeout: 120000 });
-            const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: targetDir });
-            commitHash = stdout.trim();
-            succeeded = true;
-          } catch {
-            // failed
+        try {
+          if (fs.existsSync(targetDir)) {
+            fs.rmSync(targetDir, { recursive: true, force: true });
+            fs.mkdirSync(targetDir, { recursive: true });
           }
+          await execFileAsync('git', ['clone', '--depth', '1', repoUrl, targetDir], { timeout: 120000 });
+          const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: targetDir });
+          commitHash = stdout.trim();
+          succeeded = true;
+        } catch {
+          // failed retry
         }
 
         if (!succeeded) {

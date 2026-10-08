@@ -108,6 +108,29 @@ export async function registerRoutes(app: FastifyInstance) {
     }
   });
 
+  // Get Deployment Status & Details
+  app.get('/api/deployments/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [dep] = await db.select().from(schema.deployments).where(eq(schema.deployments.id, id));
+    if (!dep) {
+      return reply.status(404).send({ error: 'Deployment not found' });
+    }
+    let plan = null;
+    try {
+      plan = JSON.parse(dep.deploymentPlan);
+    } catch {
+      // ignore
+    }
+    return {
+      id: dep.id,
+      projectId: dep.projectId,
+      status: dep.status,
+      plan,
+      createdAt: dep.createdAt,
+      updatedAt: dep.updatedAt,
+    };
+  });
+
   // Git Push-to-Deploy Webhook Endpoint
   app.post('/api/webhooks/:projectId', async (req, reply) => {
     const { projectId } = req.params as { projectId: string };

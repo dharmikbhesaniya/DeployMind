@@ -160,7 +160,7 @@ export class JevEvaluator {
 
     // Extract potential URL
     const urlMatch = message.match(/https?:\/\/[^\s]+/i);
-    const repoUrl = urlMatch ? urlMatch[0] : undefined;
+    const repoUrl = urlMatch ? urlMatch[0].replace(/[.,;:>)]+$/, '') : undefined;
 
     // Check for Deploy Intent
     if (repoUrl || /^(deploy|launch|host|run repo|build)\b/i.test(lower)) {

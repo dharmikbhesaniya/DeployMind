@@ -103,6 +103,10 @@ GUIDELINES:
     actionResult?: any
   ): string {
     if (actionResult) {
+      if (!actionResult.success) {
+        return `⚠️ **Operation Failed**: ${actionResult.error || 'An error occurred while executing the action.'}`;
+      }
+
       if (actionResult.action === 'GET_LOGS') {
         const logs = actionResult.output || 'No logs recorded yet.';
         return `### 📋 Container Logs\n\`\`\`bash\n${logs.slice(-2000)}\n\`\`\``;
@@ -123,7 +127,8 @@ GUIDELINES:
       if (actionResult.action === 'DEPLOY') {
         const repo = actionResult.output?.repoUrl || 'repository';
         const sub = actionResult.output?.subdomain;
-        return `🚀 **Deployment Initiated for \`${repo}\`**\n\nI have verified the repository, synthesized the deployment plan with Jev, and launched the build pipeline.\n\nStreaming live deployment telemetry below:`;
+        const targetUrl = sub ? (sub.startsWith('http') ? sub : `http://${sub}`) : '';
+        return `🚀 **Deployment Initiated for \`${repo}\`**\n\n- **Application URL**: [${targetUrl}](${targetUrl})\n- **Pipeline**: TypeSafe Jev Calibrated Orchestration\n\nStreaming live deployment telemetry below. You can access the application at **[${targetUrl}](${targetUrl})** as soon as the ingress route is healthy:`;
       }
 
       if (actionResult.action === 'SYSTEM_STATUS') {

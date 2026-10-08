@@ -19,7 +19,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
-  Play
+  Play,
+  Globe
 } from 'lucide-react';
 
 export interface ChatMessage {
@@ -90,14 +91,30 @@ const LiveDeploymentStreamer: React.FC<{
   repoUrl: string;
   subdomain?: string;
   wsBase: string;
+  apiBase: string;
   onComplete?: () => void;
-}> = ({ deploymentId, repoUrl, subdomain, wsBase, onComplete }) => {
+}> = ({ deploymentId, repoUrl, subdomain, wsBase, apiBase, onComplete }) => {
   const [logs, setLogs] = useState<Array<{ stage: string; message: string; level: string }>>([]);
   const [status, setStatus] = useState<'deploying' | 'healthy' | 'failed'>('deploying');
-  const [liveUrl, setLiveUrl] = useState<string | null>(subdomain ? `http://${subdomain}` : null);
+  const targetAppUrl = subdomain ? (subdomain.startsWith('http') ? subdomain : `http://${subdomain}`) : null;
+  const [liveUrl, setLiveUrl] = useState<string | null>(targetAppUrl);
   const logTerminalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // Initial fetch to check current status if already deployed
+    fetch(`${apiBase}/api/deployments/${deploymentId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.status === 'healthy') {
+          setStatus('healthy');
+          if (data.plan?.suggestedSubdomain) {
+            const sub = data.plan.suggestedSubdomain;
+            setLiveUrl(sub.startsWith('http') ? sub : `http://${sub}`);
+          }
+        }
+      })
+      .catch(() => {});
+
     const wsUrl = `${wsBase}/ws/logs?deploymentId=${deploymentId}`;
     let socket: WebSocket | null = null;
 
@@ -134,7 +151,7 @@ const LiveDeploymentStreamer: React.FC<{
     return () => {
       if (socket) socket.close();
     };
-  }, [deploymentId, wsBase]);
+  }, [deploymentId, wsBase, apiBase]);
 
   useEffect(() => {
     logTerminalRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -143,6 +160,7 @@ const LiveDeploymentStreamer: React.FC<{
   // Derive current pipeline stage
   const lastLog = logs[logs.length - 1];
   const currentStage = lastLog?.stage || 'analyze';
+  const effectiveUrl = liveUrl || targetAppUrl;
 
   return (
     <div className="mt-3.5 bg-slate-950 border border-emerald-900/50 rounded-xl overflow-hidden shadow-lg">
@@ -171,29 +189,70 @@ const LiveDeploymentStreamer: React.FC<{
               : 'bg-emerald-950 text-emerald-300 border-emerald-800/60 animate-pulse'
           }`}
         >
-          {status === 'deploying' ? `STAGE: ${currentStage.toUpperCase()}` : status.toUpperCase()}
+          {status === 'healthy' ? 'ONLINE' : status === 'deploying' ? `STAGE: ${currentStage.toUpperCase()}` : 'FAILED'}
         </span>
       </div>
 
+      {/* Target & Live Application URL Banner */}
+      <div className="px-3.5 py-2 bg-slate-900/60 border-b border-slate-800 flex items-center justify-between">
+        <div className="flex items-center space-x-2 truncate mr-2">
+          <Globe className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+          <span className="text-[10px] font-mono text-slate-400 shrink-0">
+            {status === 'healthy' ? 'Application URL:' : 'Target Hostname:'}
+          </span>
+          {effectiveUrl ? (
+            <a
+              href={effectiveUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs font-mono font-bold text-emerald-400 hover:text-emerald-300 underline truncate flex items-center space-x-1"
+            >
+              <span>{effectiveUrl}</span>
+              <ExternalLink className="h-3 w-3 inline ml-1 shrink-0" />
+            </a>
+          ) : (
+            <span className="text-xs font-mono text-slate-500">Detecting...</span>
+          )}
+        </div>
+
+        {status === 'healthy' && effectiveUrl && (
+          <a
+            href={effectiveUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-medium px-2.5 py-1 rounded flex items-center space-x-1 transition shadow shrink-0"
+          >
+            <span>Open Application</span>
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+      </div>
+
       {/* Stepper Indicator */}
-      <div className="px-3.5 py-2 bg-slate-900/50 border-b border-slate-800/80 flex items-center justify-between text-[10px] font-mono text-slate-400">
-        <span className={logs.some(l => l.stage === 'analyze') ? 'text-emerald-400 font-bold' : ''}>1. Analyze</span>
+      <div className="px-3.5 py-2 bg-slate-900/40 border-b border-slate-800/80 flex items-center justify-between text-[10px] font-mono text-slate-400">
+        <span className={logs.some(l => l.stage === 'analyze') || status === 'healthy' ? 'text-emerald-400 font-bold' : ''}>1. Analyze</span>
         <span>→</span>
-        <span className={logs.some(l => l.stage === 'plan') ? 'text-emerald-400 font-bold' : ''}>2. Jev Plan</span>
+        <span className={logs.some(l => l.stage === 'plan') || status === 'healthy' ? 'text-emerald-400 font-bold' : ''}>2. Jev Plan</span>
         <span>→</span>
-        <span className={logs.some(l => l.stage === 'build') ? 'text-emerald-400 font-bold' : ''}>3. Docker</span>
+        <span className={logs.some(l => l.stage === 'build') || status === 'healthy' ? 'text-emerald-400 font-bold' : ''}>3. Docker</span>
         <span>→</span>
-        <span className={logs.some(l => l.stage === 'deploy') ? 'text-emerald-400 font-bold' : ''}>4. Container</span>
+        <span className={logs.some(l => l.stage === 'deploy') || status === 'healthy' ? 'text-emerald-400 font-bold' : ''}>4. Container</span>
         <span>→</span>
-        <span className={logs.some(l => l.stage === 'route') ? 'text-emerald-400 font-bold' : ''}>5. Ingress</span>
+        <span className={logs.some(l => l.stage === 'route') || status === 'healthy' ? 'text-emerald-400 font-bold' : ''}>5. Ingress</span>
       </div>
 
       {/* Real-time Streaming Terminal */}
       <div className="p-3 font-mono text-[11px] max-h-48 overflow-y-auto space-y-1 bg-black/80">
         {logs.length === 0 ? (
           <div className="text-slate-500 italic flex items-center space-x-1.5">
-            <Loader2 className="h-3 w-3 animate-spin text-emerald-500" />
-            <span>Connecting to real-time deployment stream...</span>
+            {status === 'healthy' ? (
+              <span className="text-emerald-400">✅ Deployment verified healthy and operational.</span>
+            ) : (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin text-emerald-500" />
+                <span>Connecting to real-time deployment stream...</span>
+              </>
+            )}
           </div>
         ) : (
           logs.map((l, i) => (
@@ -219,27 +278,30 @@ const LiveDeploymentStreamer: React.FC<{
       </div>
 
       {/* Completed Live Subdomain Card */}
-      {status === 'healthy' && liveUrl && (
-        <div className="p-3 bg-emerald-950/60 border-t border-emerald-800/80 flex items-center justify-between">
-          <div>
-            <span className="text-[10px] uppercase font-mono text-emerald-400 block font-semibold">Service Live & Ready</span>
-            <a
-              href={liveUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs font-mono font-bold text-white hover:underline hover:text-emerald-300 flex items-center space-x-1"
-            >
-              <span>{liveUrl}</span>
-              <ExternalLink className="h-3.5 w-3.5 ml-1 text-emerald-400 inline" />
-            </a>
+      {status === 'healthy' && effectiveUrl && (
+        <div className="p-3 bg-emerald-950/70 border-t border-emerald-800 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+            <div>
+              <span className="text-[10px] uppercase font-mono text-emerald-400 block font-semibold">Service Online & Ready</span>
+              <a
+                href={effectiveUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs font-mono font-bold text-white hover:underline hover:text-emerald-300 flex items-center space-x-1"
+              >
+                <span>{effectiveUrl}</span>
+                <ExternalLink className="h-3.5 w-3.5 ml-1 text-emerald-400 inline" />
+              </a>
+            </div>
           </div>
           <a
-            href={liveUrl}
+            href={effectiveUrl}
             target="_blank"
             rel="noreferrer"
-            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition shadow"
+            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3.5 py-2 rounded-lg flex items-center space-x-1.5 transition shadow-md"
           >
-            <span>Open UI</span>
+            <span>Launch Web App</span>
             <ExternalLink className="h-3.5 w-3.5" />
           </a>
         </div>
@@ -688,6 +750,7 @@ export const AIChatConsole: React.FC<AIChatConsoleProps> = ({ apiBase, wsBase, o
                     repoUrl={m.deploymentStream.repoUrl}
                     subdomain={m.deploymentStream.subdomain}
                     wsBase={wsBase}
+                    apiBase={apiBase}
                     onComplete={onRefreshData}
                   />
                 )}
