@@ -273,6 +273,8 @@ export class DeploymentOrchestrator {
     let targetUpstream = '';
     let deployedWithDocker = false;
 
+    let activePort = plan.exposedPort;
+
     if (isDockerAvailable) {
       eventBus.emitLog({
         deploymentId: params.deploymentId,
@@ -328,7 +330,8 @@ export class DeploymentOrchestrator {
             cpuLimit: 1,
           });
           containerId = res.containerId;
-          targetUpstream = `${containerName}:${plan.exposedPort}`;
+          activePort = res.hostPort;
+          targetUpstream = `127.0.0.1:${res.hostPort}`;
           deployedWithDocker = true;
         } catch (startErr: any) {
           eventBus.emitLog({
@@ -408,7 +411,7 @@ export class DeploymentOrchestrator {
     const healthResult = await healthObserver.probeAndHeal({
       deploymentId: params.deploymentId,
       containerName,
-      port: plan.exposedPort,
+      port: activePort,
       migrationCommand: plan.migrationCommand,
     });
 
@@ -420,7 +423,7 @@ export class DeploymentOrchestrator {
         serviceId,
         containerName,
         hostname,
-        configuredPort: plan.exposedPort,
+        configuredPort: activePort,
         migrationCommand: plan.migrationCommand,
       });
     }

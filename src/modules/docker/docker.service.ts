@@ -2,6 +2,7 @@ import Docker from 'dockerode';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import net from 'node:net';
 import { config } from '../../config/index.js';
 
 export class DockerService {
@@ -116,15 +117,37 @@ export class DockerService {
     }
   }
 
+  async findAvailablePort(startPort = 4000): Promise<number> {
+    let port = startPort;
+    while (port < 65535) {
+      if (port === 3000 || port === 5173 || port === 2019) {
+        port++;
+        continue;
+      }
+      const isFree = await new Promise<boolean>((resolve) => {
+        const s = net.createServer();
+        s.once('error', () => resolve(false));
+        s.once('listening', () => {
+          s.close(() => resolve(true));
+        });
+        s.listen(port, '127.0.0.1');
+      });
+      if (isFree) return port;
+      port++;
+    }
+    return startPort;
+  }
+
   // Create and start application container
   async startContainer(params: {
     containerName: string;
     imageTag: string;
     env: Record<string, string>;
     exposedPort: number;
+    hostPort?: number;
     memoryLimitMb?: number;
     cpuLimit?: number;
-  }): Promise<{ containerId: string }> {
+  }): Promise<{ containerId: string; hostPort: number }> {
     await this.ensureNetwork();
 
     // Check if container already exists and stop it
@@ -139,6 +162,11 @@ export class DockerService {
       // Container didn't exist, proceed
     }
 
+    const hostPort =
+      params.hostPort ||
+      (await this.findAvailablePort(
+        params.exposedPort === 3000 || params.exposedPort === 5173 ? 4000 : params.exposedPort
+      ));
     const envArray = Object.entries(params.env).map(([k, v]) => `${k}=${v}`);
 
     const memoryBytes = (params.memoryLimitMb || 1024) * 1024 * 1024;
@@ -153,6 +181,9 @@ export class DockerService {
       },
       HostConfig: {
         NetworkMode: this.networkName,
+        PortBindings: {
+          [`${params.exposedPort}/tcp`]: [{ HostIp: '0.0.0.0', HostPort: hostPort.toString() }],
+        },
         RestartPolicy: { Name: 'unless-stopped' },
         Memory: memoryBytes,
         NanoCpus: nanoCpus,
@@ -160,7 +191,7 @@ export class DockerService {
     });
 
     await container.start();
-    return { containerId: container.id };
+    return { containerId: container.id, hostPort };
   }
 
   // Stop and remove container
