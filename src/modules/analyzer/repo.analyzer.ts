@@ -28,7 +28,7 @@ export interface RepoManifestSnapshot {
 
 export class RepoAnalyzer {
   // Clones or accesses repository and extracts normalized manifest
-  async analyzeRepository(repoUrl: string, branch = 'main', customTargetDir?: string): Promise<RepoManifestSnapshot> {
+  async analyzeRepository(repoUrl: string, branch = config.git.defaultBranch, customTargetDir?: string): Promise<RepoManifestSnapshot> {
     const targetDir = customTargetDir || path.join(config.dataDir, 'repos', `repo_${Date.now()}`);
     let commitHash = 'unknown';
 
@@ -36,7 +36,7 @@ export class RepoAnalyzer {
     if (fs.existsSync(targetDir)) {
       if (fs.existsSync(path.join(targetDir, '.git'))) {
         try {
-          await execFileAsync('git', ['pull'], { cwd: targetDir, timeout: 60000 });
+          await execFileAsync('git', ['pull'], { cwd: targetDir, timeout: config.git.pullTimeoutMs });
           const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: targetDir });
           commitHash = stdout.trim();
         } catch {
@@ -59,7 +59,7 @@ export class RepoAnalyzer {
           : ['clone', '--depth', '1', repoUrl, targetDir];
 
         await execFileAsync('git', gitArgs, {
-          timeout: 120000,
+          timeout: config.git.cloneTimeoutMs,
         });
         const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: targetDir });
         commitHash = stdout.trim();
@@ -71,7 +71,7 @@ export class RepoAnalyzer {
             fs.rmSync(targetDir, { recursive: true, force: true });
             fs.mkdirSync(targetDir, { recursive: true });
           }
-          await execFileAsync('git', ['clone', '--depth', '1', repoUrl, targetDir], { timeout: 120000 });
+          await execFileAsync('git', ['clone', '--depth', '1', repoUrl, targetDir], { timeout: config.git.cloneTimeoutMs });
           const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: targetDir });
           commitHash = stdout.trim();
           succeeded = true;

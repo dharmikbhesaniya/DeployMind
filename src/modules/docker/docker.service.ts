@@ -7,7 +7,7 @@ import { config } from '../../config/index.js';
 
 export class DockerService {
   private docker: Docker;
-  readonly networkName = 'deploymind-net';
+  readonly networkName = config.docker.networkName;
 
   constructor() {
     this.docker = new Docker({ socketPath: config.docker.socketPath });
@@ -150,7 +150,7 @@ export class DockerService {
         fs.writeFileSync(caddyJsonPath, JSON.stringify(initialConfig, null, 2), 'utf8');
       }
 
-      const containerName = 'deploymind-caddy';
+      const containerName = config.proxy.caddyContainerName;
       try {
         const container = this.docker.getContainer(containerName);
         const inspect = await container.inspect();

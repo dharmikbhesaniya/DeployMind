@@ -77,7 +77,7 @@ GUIDELINES:
       { role: 'user', content: userMessage },
     ];
 
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    const res = await fetch(config.ai.openaiApiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -86,10 +86,10 @@ GUIDELINES:
       body: JSON.stringify({
         model: this.model,
         messages,
-        temperature: 0.3,
-        max_tokens: 1024,
+        temperature: config.ai.openaiTemperature,
+        max_tokens: config.ai.openaiMaxTokens,
       }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(config.ai.openaiTimeoutMs),
     });
 
     if (!res.ok) throw new Error(`OpenAI request failed: ${res.statusText}`);

@@ -29,6 +29,7 @@ import {
   MessageSquare
 } from 'lucide-react';
 import { AIChatConsole } from './components/AIChatConsole';
+import { CLIENT_CONSTANTS } from './config/constants';
 
 interface Project {
   id: string;
@@ -109,13 +110,8 @@ interface SystemStatus {
   };
 }
 
-const API_BASE = typeof window !== 'undefined' && window.location.port === '5173'
-  ? `http://${window.location.hostname}:3000`
-  : '';
-
-const WS_BASE = typeof window !== 'undefined' && window.location.port === '5173'
-  ? `ws://${window.location.hostname}:3000`
-  : (typeof window !== 'undefined' ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}` : '');
+const API_BASE = CLIENT_CONSTANTS.API_BASE_URL;
+const WS_BASE = CLIENT_CONSTANTS.WS_BASE_URL;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'chat' | 'deploy' | 'projects' | 'vault' | 'proxy' | 'backups'>('chat');

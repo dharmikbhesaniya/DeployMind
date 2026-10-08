@@ -1,5 +1,6 @@
 import { dockerService } from '../docker/docker.service.js';
 import { eventBus } from '../../core/events.js';
+import { config } from '../../config/index.js';
 
 export interface HealthCheckResult {
   healthy: boolean;
@@ -23,7 +24,7 @@ export class HealthObserver {
       return { healthy: true };
     }
 
-    const maxRetries = params.maxRetries || 5;
+    const maxRetries = params.maxRetries || config.health.maxRetries;
     const path = params.path || '/';
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -36,7 +37,7 @@ export class HealthObserver {
       });
 
       // Give container a moment to initialize
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, config.health.retryIntervalMs));
 
       const logs = await dockerService.getContainerLogs(params.containerName, 50);
 

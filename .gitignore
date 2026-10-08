@@ -8,6 +8,8 @@ dist/
 # Web build
 web/node_modules/
 web/dist/
+web/.env
+web/.env.local
 
 # OS files
 .DS_Store

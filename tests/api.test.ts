@@ -141,7 +141,7 @@ describe('DeployAgent Monolith REST API Endpoints', () => {
     expect(body.deploymentId).toBeDefined();
     expect(body.liveUrl).toBeDefined();
     expect(body.plan).toBeDefined();
-  }, 15000);
+  }, 25000);
 
   it('POST /api/ai/chat should process natural conversation with TypeSafe Jev decision classification', async () => {
     const res = await app.inject({

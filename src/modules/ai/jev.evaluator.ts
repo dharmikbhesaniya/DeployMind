@@ -61,8 +61,8 @@ export class JevEvaluator {
   private endpoint: string;
 
   constructor() {
-    this.apiKey = process.env.TYPESAFE_API_KEY || process.env.JEV_API_KEY || '';
-    this.endpoint = process.env.JEV_API_URL || 'https://api.typesafe.ai/v1/jev/evaluate';
+    this.apiKey = config.ai.typesafe.apiKey;
+    this.endpoint = config.ai.typesafe.apiUrl;
   }
 
   // 1. Intent Classification & Safety Guardrail Evaluation
