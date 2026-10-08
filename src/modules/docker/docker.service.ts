@@ -117,6 +117,93 @@ export class DockerService {
     }
   }
 
+  // Ensure DeployMind Caddy reverse proxy container is running on deploymind-net
+  async ensureCaddyContainer(): Promise<boolean> {
+    try {
+      const isAvail = await this.isAvailable();
+      if (!isAvail) return false;
+
+      await this.ensureNetwork();
+
+      const caddyDir = path.resolve('.data/caddy');
+      if (!fs.existsSync(caddyDir)) {
+        fs.mkdirSync(caddyDir, { recursive: true });
+      }
+      const caddyJsonPath = path.join(caddyDir, 'caddy.json');
+      if (!fs.existsSync(caddyJsonPath)) {
+        const initialConfig = {
+          admin: {
+            listen: '0.0.0.0:2019',
+            enforce_origin: false,
+          },
+          apps: {
+            http: {
+              servers: {
+                srv0: {
+                  listen: [':80', ':443'],
+                  routes: [],
+                },
+              },
+            },
+          },
+        };
+        fs.writeFileSync(caddyJsonPath, JSON.stringify(initialConfig, null, 2), 'utf8');
+      }
+
+      const containerName = 'deploymind-caddy';
+      try {
+        const container = this.docker.getContainer(containerName);
+        const inspect = await container.inspect();
+        if (inspect.State.Running) {
+          return true;
+        }
+        await container.start();
+        return true;
+      } catch {
+        // Container does not exist yet
+      }
+
+      // Check if image exists, pull if missing
+      try {
+        await this.docker.getImage('caddy:alpine').inspect();
+      } catch {
+        await new Promise<void>((resolve) => {
+          this.docker.pull('caddy:alpine', (err: any, stream: any) => {
+            if (err || !stream) return resolve();
+            this.docker.modem.followProgress(stream, () => resolve());
+          });
+        });
+      }
+
+      const container = await this.docker.createContainer({
+        name: containerName,
+        Image: 'caddy:alpine',
+        Cmd: ['caddy', 'run', '--config', '/etc/caddy/caddy.json'],
+        ExposedPorts: {
+          '80/tcp': {},
+          '443/tcp': {},
+          '2019/tcp': {},
+        },
+        HostConfig: {
+          NetworkMode: this.networkName,
+          PortBindings: {
+            '80/tcp': [{ HostIp: '0.0.0.0', HostPort: '80' }],
+            '443/tcp': [{ HostIp: '0.0.0.0', HostPort: '443' }],
+            '2019/tcp': [{ HostIp: '0.0.0.0', HostPort: '2019' }],
+          },
+          Binds: [`${caddyJsonPath}:/etc/caddy/caddy.json`],
+          RestartPolicy: { Name: 'unless-stopped' },
+        },
+      });
+
+      await container.start();
+      return true;
+    } catch (err: any) {
+      console.warn('[DockerService] Could not auto-start Caddy proxy container:', err?.message || err);
+      return false;
+    }
+  }
+
   async findAvailablePort(startPort = 4000): Promise<number> {
     let port = startPort;
     while (port < 65535) {

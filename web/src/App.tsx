@@ -1020,8 +1020,16 @@ export default function App() {
                     <div className="mt-3 bg-emerald-950/60 border border-emerald-800 rounded-lg p-3">
                       <div className="flex items-center justify-between">
                         <div>
-                          <span className="text-[10px] uppercase font-mono text-emerald-400 block">Service Active</span>
-                          <span className="text-sm font-semibold text-white">{liveUrl}</span>
+                          <span className="text-[10px] uppercase font-mono text-emerald-400 block">Service Active & Ingress Routed</span>
+                          <a
+                            href={liveUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-sm font-semibold text-white hover:underline hover:text-emerald-300 inline-flex items-center space-x-1"
+                          >
+                            <span>{liveUrl}</span>
+                            <ExternalLink className="h-3.5 w-3.5 ml-1 inline text-emerald-400" />
+                          </a>
                         </div>
                         <a
                           href={liveUrl}
@@ -1072,6 +1080,38 @@ export default function App() {
                       </div>
 
                       <p className="text-xs text-slate-400 truncate mb-3">{p.repoUrl}</p>
+
+                      {/* Subdomain Route Link */}
+                      {(() => {
+                        const projRoute = routes.find(
+                          (r) => r.hostname.startsWith(p.slug) || r.hostname.includes(p.slug) || r.hostname.startsWith(p.name)
+                        );
+                        if (!projRoute) return null;
+                        return (
+                          <div className="bg-emerald-950/40 border border-emerald-800/60 rounded-lg p-2.5 mb-3 flex items-center justify-between">
+                            <div className="truncate mr-2">
+                              <span className="text-[10px] text-emerald-400 font-mono block">Subdomain Route</span>
+                              <a
+                                href={`http://${projRoute.hostname}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs font-mono text-white hover:text-emerald-300 hover:underline flex items-center space-x-1"
+                              >
+                                <span className="truncate">http://{projRoute.hostname}</span>
+                              </a>
+                            </div>
+                            <a
+                              href={`http://${projRoute.hostname}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="bg-emerald-600 hover:bg-emerald-500 text-white p-1.5 rounded"
+                              title="Open live subdomain"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                          </div>
+                        );
+                      })()}
 
                       {/* Push-to-Deploy Webhook Box */}
                       <div className="bg-slate-950 border border-slate-800/80 rounded-lg p-2.5 mb-3">
@@ -1277,12 +1317,22 @@ export default function App() {
                   ) : (
                     routes.map((r) => (
                       <tr key={r.routeId} className="hover:bg-slate-800/40">
-                        <td className="px-4 py-3 font-mono font-medium text-emerald-400">{r.hostname}</td>
+                        <td className="px-4 py-3 font-mono font-medium text-emerald-400">
+                          <a
+                            href={`http://${r.hostname}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="hover:underline inline-flex items-center space-x-1.5"
+                          >
+                            <span>{r.hostname}</span>
+                            <ExternalLink className="h-3 w-3 text-emerald-500" />
+                          </a>
+                        </td>
                         <td className="px-4 py-3 font-mono text-slate-300">{r.targetUpstream}</td>
                         <td className="px-4 py-3 uppercase text-slate-400">{r.provider}</td>
                         <td className="px-4 py-3">
                           <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px]">
-                            SSL ACTIVE (Let's Encrypt)
+                            ONLINE (Port 80 / 443)
                           </span>
                         </td>
                       </tr>

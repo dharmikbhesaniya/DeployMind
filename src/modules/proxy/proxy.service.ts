@@ -88,6 +88,25 @@ export class ProxyService {
       sslActive: Boolean(r.sslActive),
     }));
   }
+
+  // Restore and register all persisted routes from SQLite into active proxy engine
+  async syncDatabaseRoutes(): Promise<void> {
+    const rows = await db.select().from(schema.domains);
+    for (const r of rows) {
+      try {
+        const adapter = this.getAdapter(r.proxyProvider as 'caddy' | 'traefik');
+        await adapter.registerRoute({
+          routeId: r.routeIdentifier,
+          hostname: r.hostname,
+          targetUpstream: r.targetUpstream,
+          provider: r.proxyProvider as 'caddy' | 'traefik',
+          sslActive: Boolean(r.sslActive),
+        });
+      } catch (err: any) {
+        console.warn(`[ProxyService] Could not restore route ${r.hostname}:`, err?.message || err);
+      }
+    }
+  }
 }
 
 export const proxyService = new ProxyService();

@@ -393,18 +393,22 @@ export class DeploymentOrchestrator {
 
     // 4. Register Reverse Proxy Route (Caddy or Traefik)
     const hostname = plan.suggestedSubdomain;
+    const proxyUpstream = deployedWithDocker
+      ? `${containerName}:${plan.exposedPort}`
+      : `host.docker.internal:${activePort}`;
+
     eventBus.emitLog({
       deploymentId: params.deploymentId,
       timestamp: Date.now(),
       level: 'info',
       stage: 'route',
-      message: `Registering reverse proxy route for ${hostname} -> ${targetUpstream}...`,
+      message: `Registering reverse proxy route for ${hostname} -> ${proxyUpstream}...`,
     });
 
     await proxyService.registerServiceRoute({
       serviceId,
       hostname,
-      targetUpstream,
+      targetUpstream: proxyUpstream,
     });
 
     // 5. Health Check Probes & Autonomous Diagnostic Healer
@@ -434,17 +438,19 @@ export class DeploymentOrchestrator {
       .set({ status: 'healthy', updatedAt: Date.now() })
       .where(eq(schema.deployments.id, params.deploymentId));
 
+    const finalLiveUrl = hostname.endsWith('.localhost') ? `http://${hostname}` : `https://${hostname}`;
+
     eventBus.emitLog({
       deploymentId: params.deploymentId,
       timestamp: Date.now(),
       level: 'success',
       stage: 'deploy',
-      message: `Deployment complete! Live at https://${hostname}`,
+      message: `Deployment complete! Live at ${finalLiveUrl} (Direct container port: http://127.0.0.1:${activePort})`,
     });
 
     return {
       status: 'healthy',
-      liveUrl: `https://${hostname}`,
+      liveUrl: finalLiveUrl,
     };
   }
 

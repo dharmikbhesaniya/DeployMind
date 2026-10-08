@@ -1,4 +1,5 @@
 import { config } from '../../config/index.js';
+import { dockerService } from '../docker/docker.service.js';
 import type { IngressRoute, ProxyAdapter } from '../../core/types.js';
 
 export class CaddyAdapter implements ProxyAdapter {
@@ -11,14 +12,37 @@ export class CaddyAdapter implements ProxyAdapter {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.apiUrl}/config/`, { method: 'GET', signal: AbortSignal.timeout(2000) });
-      return res.ok;
+      const res = await fetch(`${this.apiUrl}/config/`, { method: 'GET', signal: AbortSignal.timeout(1500) });
+      if (res.ok) return true;
+    } catch {
+      // API down, attempt to start Caddy container via Docker
+    }
+
+    try {
+      const ensured = await dockerService.ensureCaddyContainer();
+      if (!ensured) return false;
+
+      // Check if Caddy API is now responsive
+      for (let i = 0; i < 4; i++) {
+        await new Promise((r) => setTimeout(r, 400));
+        try {
+          const res = await fetch(`${this.apiUrl}/config/`, { method: 'GET', signal: AbortSignal.timeout(1000) });
+          if (res.ok) return true;
+        } catch {
+          // retry
+        }
+      }
     } catch {
       return false;
     }
+
+    return false;
   }
 
   async registerRoute(route: IngressRoute): Promise<void> {
+    // Ensure Caddy is online before posting
+    await this.isAvailable();
+
     const routePayload = {
       '@id': route.routeId,
       match: [{ host: [route.hostname] }],
@@ -40,6 +64,13 @@ export class CaddyAdapter implements ProxyAdapter {
       terminal: true,
     };
 
+    // Remove existing route by id first to ensure idempotent upsert
+    try {
+      await fetch(`${this.apiUrl}/id/${route.routeId}`, { method: 'DELETE', signal: AbortSignal.timeout(1500) });
+    } catch {
+      // Ignored
+    }
+
     // Upsert route into Caddy configuration
     try {
       const res = await fetch(
@@ -48,6 +79,7 @@ export class CaddyAdapter implements ProxyAdapter {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(routePayload),
+          signal: AbortSignal.timeout(2500),
         }
       );
 
@@ -60,19 +92,20 @@ export class CaddyAdapter implements ProxyAdapter {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(routePayload),
+            signal: AbortSignal.timeout(2500),
           }
         );
       }
-    } catch (err) {
-      console.warn(`[CaddyAdapter] Warning registering route ${route.hostname}:`, err);
+    } catch (err: any) {
+      console.warn(`[CaddyAdapter] Warning registering route ${route.hostname}:`, err?.message || err);
     }
   }
 
   async removeRoute(routeId: string): Promise<void> {
     try {
-      await fetch(`${this.apiUrl}/id/${routeId}`, { method: 'DELETE' });
-    } catch (err) {
-      console.warn(`[CaddyAdapter] Warning removing route ${routeId}:`, err);
+      await fetch(`${this.apiUrl}/id/${routeId}`, { method: 'DELETE', signal: AbortSignal.timeout(1500) });
+    } catch (err: any) {
+      console.warn(`[CaddyAdapter] Warning removing route ${routeId}:`, err?.message || err);
     }
   }
 
