@@ -121,7 +121,9 @@ GUIDELINES:
       }
 
       if (actionResult.action === 'DEPLOY') {
-        return `🚀 **Deployment Initialized**: Zero-touch deployment pipeline running. Check the live streaming console for build progress.`;
+        const repo = actionResult.output?.repoUrl || 'repository';
+        const sub = actionResult.output?.subdomain;
+        return `🚀 **Deployment Initiated for \`${repo}\`**\n\nI have verified the repository, synthesized the deployment plan with Jev, and launched the build pipeline.\n\nStreaming live deployment telemetry below:`;
       }
 
       if (actionResult.action === 'SYSTEM_STATUS') {

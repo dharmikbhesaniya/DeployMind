@@ -6,18 +6,23 @@ import {
   ShieldAlert,
   CheckCircle,
   XCircle,
-  Copy,
-  Check,
-  RotateCw,
-  Cpu,
-  Play,
-  Square,
+  Plus,
   Trash2,
   ExternalLink,
-  MessageSquare
+  MessageSquare,
+  Clock,
+  ChevronLeft,
+  ChevronRight,
+  Activity,
+  Layers,
+  Rocket,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  Play
 } from 'lucide-react';
 
-interface ChatMessage {
+export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
@@ -44,38 +49,307 @@ interface ChatMessage {
     output?: any;
     error?: string;
   };
+  deploymentStream?: {
+    deploymentId: string;
+    repoUrl: string;
+    subdomain?: string;
+  };
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: ChatMessage[];
 }
 
 interface AIChatConsoleProps {
   apiBase: string;
+  wsBase: string;
   onRefreshData?: () => void;
 }
 
-export const AIChatConsole: React.FC<AIChatConsoleProps> = ({ apiBase, onRefreshData }) => {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome',
-      role: 'assistant',
-      content: `Hello! I am **DeployMind AI**, powered by **TypeSafe Jev** (fast decision engine) and **ChatGPT** (conversational reasoning).
+const DEFAULT_WELCOME: ChatMessage = {
+  id: 'welcome',
+  role: 'assistant',
+  content: `Hello! I am **DeployMind AI**, powered by **TypeSafe Jev** (System 1 fast decision engine) and **ChatGPT** (System 2 conversational reasoning).
 
-Ask me anything or give me natural commands like:
-- 🚀 *"Deploy https://github.com/webadderallorg/Recordly"*
+Ask me anything or give natural commands:
+- 🚀 *"Deploy https://github.com/webadderallorg/Recordly"* *(I will stream live progress directly in chat)*
 - 📋 *"Show me logs for recordly"*
 - ⚡ *"Stop service web"* or *"Start service web"*
-- 🗑️ *"Delete project recordly"* *(I will ask permission before deleting)*
+- 🗑️ *"Delete project recordly"* *(Requires interactive permission)*
 - 📊 *"What services and routes are currently active?"*`,
-      timestamp: new Date().toLocaleTimeString(),
-    },
-  ]);
+  timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+};
+
+// Sub-component: Live Real-Time Deployment Streamer inside Chat Bubble
+const LiveDeploymentStreamer: React.FC<{
+  deploymentId: string;
+  repoUrl: string;
+  subdomain?: string;
+  wsBase: string;
+  onComplete?: () => void;
+}> = ({ deploymentId, repoUrl, subdomain, wsBase, onComplete }) => {
+  const [logs, setLogs] = useState<Array<{ stage: string; message: string; level: string }>>([]);
+  const [status, setStatus] = useState<'deploying' | 'healthy' | 'failed'>('deploying');
+  const [liveUrl, setLiveUrl] = useState<string | null>(subdomain ? `http://${subdomain}` : null);
+  const logTerminalRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const wsUrl = `${wsBase}/ws/logs?deploymentId=${deploymentId}`;
+    let socket: WebSocket | null = null;
+
+    try {
+      socket = new WebSocket(wsUrl);
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.message) {
+            setLogs((prev) => [...prev, { stage: data.stage || 'deploy', message: data.message, level: data.level || 'info' }]);
+            
+            if (data.message.includes('Deployment complete') || data.level === 'success') {
+              setStatus('healthy');
+              const match = data.message.match(/https?:\/\/[^\s)]+/);
+              if (match) setLiveUrl(match[0]);
+              if (onComplete) onComplete();
+            } else if (data.level === 'error') {
+              setStatus('failed');
+            }
+          }
+        } catch {
+          // ignore
+        }
+      };
+
+      socket.onerror = () => {
+        // Fallback or retry
+      };
+    } catch {
+      // ignore
+    }
+
+    return () => {
+      if (socket) socket.close();
+    };
+  }, [deploymentId, wsBase]);
+
+  useEffect(() => {
+    logTerminalRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
+
+  // Derive current pipeline stage
+  const lastLog = logs[logs.length - 1];
+  const currentStage = lastLog?.stage || 'analyze';
+
+  return (
+    <div className="mt-3.5 bg-slate-950 border border-emerald-900/50 rounded-xl overflow-hidden shadow-lg">
+      {/* Streamer Header */}
+      <div className="bg-slate-900/90 px-3.5 py-2.5 border-b border-slate-800 flex items-center justify-between">
+        <div className="flex items-center space-x-2">
+          {status === 'deploying' ? (
+            <Loader2 className="h-4 w-4 text-emerald-400 animate-spin" />
+          ) : status === 'healthy' ? (
+            <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+          ) : (
+            <AlertCircle className="h-4 w-4 text-red-400" />
+          )}
+          <span className="font-semibold text-xs text-white">
+            {status === 'deploying' ? 'Deploying in Real-Time' : status === 'healthy' ? 'Deployment Live' : 'Deployment Alert'}
+          </span>
+          <span className="text-[10px] font-mono text-slate-400 truncate max-w-[200px]">{repoUrl}</span>
+        </div>
+
+        <span
+          className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+            status === 'healthy'
+              ? 'bg-emerald-950 text-emerald-400 border-emerald-800'
+              : status === 'failed'
+              ? 'bg-red-950 text-red-400 border-red-800'
+              : 'bg-emerald-950 text-emerald-300 border-emerald-800/60 animate-pulse'
+          }`}
+        >
+          {status === 'deploying' ? `STAGE: ${currentStage.toUpperCase()}` : status.toUpperCase()}
+        </span>
+      </div>
+
+      {/* Stepper Indicator */}
+      <div className="px-3.5 py-2 bg-slate-900/50 border-b border-slate-800/80 flex items-center justify-between text-[10px] font-mono text-slate-400">
+        <span className={logs.some(l => l.stage === 'analyze') ? 'text-emerald-400 font-bold' : ''}>1. Analyze</span>
+        <span>→</span>
+        <span className={logs.some(l => l.stage === 'plan') ? 'text-emerald-400 font-bold' : ''}>2. Jev Plan</span>
+        <span>→</span>
+        <span className={logs.some(l => l.stage === 'build') ? 'text-emerald-400 font-bold' : ''}>3. Docker</span>
+        <span>→</span>
+        <span className={logs.some(l => l.stage === 'deploy') ? 'text-emerald-400 font-bold' : ''}>4. Container</span>
+        <span>→</span>
+        <span className={logs.some(l => l.stage === 'route') ? 'text-emerald-400 font-bold' : ''}>5. Ingress</span>
+      </div>
+
+      {/* Real-time Streaming Terminal */}
+      <div className="p-3 font-mono text-[11px] max-h-48 overflow-y-auto space-y-1 bg-black/80">
+        {logs.length === 0 ? (
+          <div className="text-slate-500 italic flex items-center space-x-1.5">
+            <Loader2 className="h-3 w-3 animate-spin text-emerald-500" />
+            <span>Connecting to real-time deployment stream...</span>
+          </div>
+        ) : (
+          logs.map((l, i) => (
+            <div key={i} className="flex items-start space-x-2 leading-relaxed">
+              <span className="text-slate-500 select-none">[{l.stage}]</span>
+              <span
+                className={
+                  l.level === 'error'
+                    ? 'text-red-400'
+                    : l.level === 'warn'
+                    ? 'text-amber-400'
+                    : l.level === 'success'
+                    ? 'text-emerald-300 font-semibold'
+                    : 'text-slate-300'
+                }
+              >
+                {l.message}
+              </span>
+            </div>
+          ))
+        )}
+        <div ref={logTerminalRef} />
+      </div>
+
+      {/* Completed Live Subdomain Card */}
+      {status === 'healthy' && liveUrl && (
+        <div className="p-3 bg-emerald-950/60 border-t border-emerald-800/80 flex items-center justify-between">
+          <div>
+            <span className="text-[10px] uppercase font-mono text-emerald-400 block font-semibold">Service Live & Ready</span>
+            <a
+              href={liveUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs font-mono font-bold text-white hover:underline hover:text-emerald-300 flex items-center space-x-1"
+            >
+              <span>{liveUrl}</span>
+              <ExternalLink className="h-3.5 w-3.5 ml-1 text-emerald-400 inline" />
+            </a>
+          </div>
+          <a
+            href={liveUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition shadow"
+          >
+            <span>Open UI</span>
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const AIChatConsole: React.FC<AIChatConsoleProps> = ({ apiBase, wsBase, onRefreshData }) => {
+  // 1. Persistent Multi-Chat Sessions State from localStorage
+  const [sessions, setSessions] = useState<ChatSession[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('deploymind_chat_sessions');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return [
+      {
+        id: 'session_default',
+        title: 'New Conversation',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [DEFAULT_WELCOME],
+      },
+    ];
+  });
+
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const savedId = localStorage.getItem('deploymind_active_chat_id');
+      if (savedId) return savedId;
+    }
+    return 'session_default';
+  });
+
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Sync to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('deploymind_chat_sessions', JSON.stringify(sessions));
+      localStorage.setItem('deploymind_active_chat_id', activeSessionId);
+    } catch {
+      // ignore
+    }
+  }, [sessions, activeSessionId]);
+
+  // Find active session
+  const activeSession = sessions.find((s) => s.id === activeSessionId) || sessions[0] || {
+    id: 'fallback',
+    title: 'New Conversation',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: [DEFAULT_WELCOME],
+  };
+
+  const currentMessages = activeSession.messages;
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading]);
+  }, [currentMessages, loading]);
 
+  // Create a brand new chat session
+  const handleCreateNewChat = () => {
+    const newSessionId = `session_${Date.now()}`;
+    const newSession: ChatSession = {
+      id: newSessionId,
+      title: 'New Conversation',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: [
+        {
+          ...DEFAULT_WELCOME,
+          id: `welcome_${Date.now()}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ],
+    };
+
+    setSessions((prev) => [newSession, ...prev]);
+    setActiveSessionId(newSessionId);
+    setInput('');
+  };
+
+  // Delete an old chat session
+  const handleDeleteSession = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (sessions.length <= 1) {
+      handleCreateNewChat();
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+      return;
+    }
+
+    const filtered = sessions.filter((s) => s.id !== id);
+    setSessions(filtered);
+    if (activeSessionId === id) {
+      setActiveSessionId(filtered[0]?.id || 'session_default');
+    }
+  };
+
+  // Send message
   const handleSendMessage = async (customMessage?: string) => {
     const textToSend = customMessage || input;
     if (!textToSend.trim() || loading) return;
@@ -84,10 +358,30 @@ Ask me anything or give me natural commands like:
       id: `usr_${Date.now()}`,
       role: 'user',
       content: textToSend.trim(),
-      timestamp: new Date().toLocaleTimeString(),
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    // Auto-update session title from first user message
+    let sessionTitle = activeSession.title;
+    if (activeSession.title === 'New Conversation') {
+      sessionTitle = textToSend.trim().length > 30 ? textToSend.trim().slice(0, 30) + '...' : textToSend.trim();
+    }
+
+    // Update session with user message immediately
+    setSessions((prev) =>
+      prev.map((s) => {
+        if (s.id === activeSessionId) {
+          return {
+            ...s,
+            title: sessionTitle,
+            updatedAt: Date.now(),
+            messages: [...s.messages, userMsg],
+          };
+        }
+        return s;
+      })
+    );
+
     if (!customMessage) setInput('');
     setLoading(true);
 
@@ -97,40 +391,74 @@ Ask me anything or give me natural commands like:
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: textToSend.trim(),
-          history: messages.map((m) => ({ role: m.role, content: m.content })),
+          history: currentMessages.map((m) => ({ role: m.role, content: m.content })),
         }),
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
+      // Check if response initiated a live deployment
+      let deploymentStream: ChatMessage['deploymentStream'] = undefined;
+      if (data.actionResult?.action === 'DEPLOY' && data.actionResult?.output?.deploymentId) {
+        deploymentStream = {
+          deploymentId: data.actionResult.output.deploymentId,
+          repoUrl: data.actionResult.output.repoUrl,
+          subdomain: data.actionResult.output.subdomain,
+        };
+      }
+
       const aiMsg: ChatMessage = {
         id: `ai_${Date.now()}`,
         role: 'assistant',
         content: data.message,
-        timestamp: new Date().toLocaleTimeString(),
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         intent: data.intent,
         interactivePrompt: data.interactivePrompt,
         actionResult: data.actionResult,
+        deploymentStream,
       };
 
-      setMessages((prev) => [...prev, aiMsg]);
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id === activeSessionId) {
+            return {
+              ...s,
+              updatedAt: Date.now(),
+              messages: [...s.messages, aiMsg],
+            };
+          }
+          return s;
+        })
+      );
+
       if (onRefreshData) onRefreshData();
     } catch (err: any) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `err_${Date.now()}`,
-          role: 'assistant',
-          content: `⚠️ Failed to process command: ${err.message}`,
-          timestamp: new Date().toLocaleTimeString(),
-        },
-      ]);
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id === activeSessionId) {
+            return {
+              ...s,
+              messages: [
+                ...s.messages,
+                {
+                  id: `err_${Date.now()}`,
+                  role: 'assistant',
+                  content: `⚠️ Failed to process command: ${err.message}`,
+                  timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                },
+              ],
+            };
+          }
+          return s;
+        })
+      );
     } finally {
       setLoading(false);
     }
   };
 
+  // Interactive Confirmation (Approve / Deny)
   const handleConfirmPrompt = async (promptId: string, approved: boolean, messageId: string) => {
     setLoading(true);
     try {
@@ -142,16 +470,24 @@ Ask me anything or give me natural commands like:
 
       const data = await res.json();
 
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.id === messageId) {
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id === activeSessionId) {
             return {
-              ...m,
-              interactivePrompt: undefined, // remove prompt once decided
-              content: `${m.content}\n\n${approved ? '✅ **Action Approved & Executed**:' : '❌ **Action Denied**:'} ${data.message}`,
+              ...s,
+              messages: s.messages.map((m) => {
+                if (m.id === messageId) {
+                  return {
+                    ...m,
+                    interactivePrompt: undefined,
+                    content: `${m.content}\n\n${approved ? '✅ **Action Approved & Executed**:' : '❌ **Action Denied**:'} ${data.message}`,
+                  };
+                }
+                return m;
+              }),
             };
           }
-          return m;
+          return s;
         })
       );
 
@@ -163,166 +499,238 @@ Ask me anything or give me natural commands like:
     }
   };
 
-  const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
   return (
-    <div className="flex flex-col h-[750px] bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
-      {/* Top Console Bar */}
-      <div className="bg-slate-950 px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-        <div className="flex items-center space-x-2.5">
-          <div className="h-7 w-7 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-            <Sparkles className="h-4 w-4" />
-          </div>
-          <div>
-            <div className="flex items-center space-x-2">
-              <span className="font-semibold text-sm text-white">DeployMind AI Assistant</span>
-              <span className="px-1.5 py-0.5 rounded bg-emerald-950 border border-emerald-800 text-[10px] text-emerald-400 font-mono">
-                Jev (System 1) + ChatGPT (System 2)
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-400">Claude Code-style conversational systems manager</p>
-          </div>
+    <div className="flex h-[760px] bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl">
+      {/* LEFT: Persistent Chat History Sidebar */}
+      <div
+        className={`${
+          sidebarOpen ? 'w-64' : 'w-0'
+        } transition-all duration-200 ease-in-out bg-slate-950 border-r border-slate-800 flex flex-col shrink-0 overflow-hidden`}
+      >
+        {/* New Chat Button */}
+        <div className="p-3 border-b border-slate-800">
+          <button
+            onClick={handleCreateNewChat}
+            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs py-2.5 px-3 rounded-lg flex items-center justify-center space-x-2 transition shadow-sm"
+          >
+            <Plus className="h-4 w-4" />
+            <span>New Chat</span>
+          </button>
         </div>
 
-        {/* Quick Command Suggestions */}
-        <div className="hidden md:flex items-center space-x-2">
-          <button
-            onClick={() => handleSendMessage('Show me active system status and health')}
-            className="text-[11px] px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition"
-          >
-            Status Check
-          </button>
-          <button
-            onClick={() => handleSendMessage('Show me recent logs for all running services')}
-            className="text-[11px] px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition"
-          >
-            Tailing Logs
-          </button>
+        {/* Sessions List */}
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          <div className="text-[10px] uppercase font-mono text-slate-500 px-2 py-1 font-semibold">
+            Recent Conversations
+          </div>
+
+          {sessions.map((s) => {
+            const isActive = s.id === activeSessionId;
+            return (
+              <div
+                key={s.id}
+                onClick={() => setActiveSessionId(s.id)}
+                className={`group flex items-center justify-between px-2.5 py-2 rounded-lg cursor-pointer text-xs transition ${
+                  isActive
+                    ? 'bg-slate-800/90 text-white font-medium border border-slate-700/80'
+                    : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
+                }`}
+              >
+                <div className="flex items-center space-x-2 truncate mr-1.5">
+                  <MessageSquare className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-emerald-400' : 'text-slate-500'}`} />
+                  <span className="truncate text-xs">{s.title}</span>
+                </div>
+
+                <button
+                  onClick={(e) => handleDeleteSession(s.id, e)}
+                  className="opacity-0 group-hover:opacity-100 hover:text-red-400 p-1 text-slate-500 rounded transition"
+                  title="Delete chat"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Sidebar Footer */}
+        <div className="p-3 border-t border-slate-800/80 text-[11px] text-slate-500 flex items-center justify-between font-mono">
+          <span>TypeSafe Jev + GPT-4o</span>
+          <span className="h-2 w-2 rounded-full bg-emerald-500" />
         </div>
       </div>
 
-      {/* Message Stream */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 font-sans text-xs">
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            className={`flex flex-col ${
-              m.role === 'user' ? 'items-end' : 'items-start'
-            }`}
-          >
-            <div className="flex items-center space-x-1.5 mb-1 px-1">
-              <span className="text-[10px] font-mono text-slate-400">
-                {m.role === 'user' ? 'You' : 'DeployMind AI'}
-              </span>
-              <span className="text-[10px] text-slate-500">• {m.timestamp}</span>
-              {m.intent && (
-                <span
-                  className={`text-[9px] font-mono px-1.5 py-0.2 rounded border ${
-                    m.intent.riskLevel === 'DESTRUCTIVE'
-                      ? 'bg-red-950 text-red-400 border-red-800'
-                      : m.intent.riskLevel === 'CAUTION'
-                      ? 'bg-amber-950 text-amber-400 border-amber-800'
-                      : 'bg-emerald-950 text-emerald-400 border-emerald-800'
-                  }`}
-                >
-                  Jev: {m.intent.choice} ({Math.round(m.intent.confidence * 100)}%)
-                </span>
-              )}
-            </div>
+      {/* RIGHT: Chat Area */}
+      <div className="flex-1 flex flex-col min-w-0 bg-slate-900">
+        {/* Top Header Bar */}
+        <div className="bg-slate-950 px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="text-slate-400 hover:text-white p-1 hover:bg-slate-800 rounded transition"
+              title={sidebarOpen ? 'Collapse chat history' : 'Open chat history'}
+            >
+              {sidebarOpen ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            </button>
 
+            <div className="flex items-center space-x-2">
+              <span className="font-semibold text-sm text-white truncate max-w-[240px]">
+                {activeSession.title}
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-emerald-950 border border-emerald-800 text-[10px] text-emerald-400 font-mono hidden sm:inline">
+                Persistent Chat
+              </span>
+            </div>
+          </div>
+
+          {/* Quick Command Suggestions */}
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => handleSendMessage('Deploy https://github.com/webadderallorg/Recordly')}
+              className="text-[11px] px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-300 rounded border border-slate-700 flex items-center space-x-1 transition"
+            >
+              <Rocket className="h-3 w-3 text-emerald-400" />
+              <span>Deploy Recordly</span>
+            </button>
+            <button
+              onClick={() => handleSendMessage('Show me active system status and health')}
+              className="hidden md:flex text-[11px] px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition"
+            >
+              System Health
+            </button>
+          </div>
+        </div>
+
+        {/* Message Stream */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 font-sans text-xs">
+          {currentMessages.map((m) => (
             <div
-              className={`max-w-[85%] rounded-xl p-3.5 leading-relaxed ${
-                m.role === 'user'
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'bg-slate-950 border border-slate-800 text-slate-200 shadow-sm'
+              key={m.id}
+              className={`flex flex-col ${
+                m.role === 'user' ? 'items-end' : 'items-start'
               }`}
             >
-              <div className="whitespace-pre-wrap space-y-2">
-                {m.content}
+              <div className="flex items-center space-x-1.5 mb-1 px-1">
+                <span className="text-[10px] font-mono text-slate-400">
+                  {m.role === 'user' ? 'You' : 'DeployMind AI'}
+                </span>
+                <span className="text-[10px] text-slate-500">• {m.timestamp}</span>
+                {m.intent && (
+                  <span
+                    className={`text-[9px] font-mono px-1.5 py-0.2 rounded border ${
+                      m.intent.riskLevel === 'DESTRUCTIVE'
+                        ? 'bg-red-950 text-red-400 border-red-800'
+                        : m.intent.riskLevel === 'CAUTION'
+                        ? 'bg-amber-950 text-amber-400 border-amber-800'
+                        : 'bg-emerald-950 text-emerald-400 border-emerald-800'
+                    }`}
+                  >
+                    Jev: {m.intent.choice} ({Math.round(m.intent.confidence * 100)}%)
+                  </span>
+                )}
               </div>
 
-              {/* Claude Code Interactive Permission Guardrail Card */}
-              {m.interactivePrompt && (
-                <div className="mt-3.5 bg-red-950/40 border border-red-800/80 rounded-lg p-3 space-y-2.5">
-                  <div className="flex items-start space-x-2">
-                    <ShieldAlert className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
-                    <div>
-                      <h4 className="font-semibold text-red-200 text-xs">
-                        {m.interactivePrompt.title}
-                      </h4>
-                      <p className="text-[11px] text-red-300/90 mt-0.5">
-                        {m.interactivePrompt.details}
-                      </p>
+              <div
+                className={`max-w-[85%] rounded-xl p-3.5 leading-relaxed ${
+                  m.role === 'user'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'bg-slate-950 border border-slate-800 text-slate-200 shadow-sm'
+                }`}
+              >
+                <div className="whitespace-pre-wrap space-y-2">
+                  {m.content}
+                </div>
+
+                {/* Claude Code Interactive Permission Guardrail Card */}
+                {m.interactivePrompt && (
+                  <div className="mt-3.5 bg-red-950/40 border border-red-800/80 rounded-lg p-3 space-y-2.5">
+                    <div className="flex items-start space-x-2">
+                      <ShieldAlert className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+                      <div>
+                        <h4 className="font-semibold text-red-200 text-xs">
+                          {m.interactivePrompt.title}
+                        </h4>
+                        <p className="text-[11px] text-red-300/90 mt-0.5">
+                          {m.interactivePrompt.details}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center space-x-2 pt-1 border-t border-red-900/60">
+                      <button
+                        onClick={() =>
+                          handleConfirmPrompt(m.interactivePrompt!.id, true, m.id)
+                        }
+                        disabled={loading}
+                        className="bg-red-600 hover:bg-red-500 text-white font-medium px-3 py-1.5 rounded text-[11px] flex items-center space-x-1 transition"
+                      >
+                        <CheckCircle className="h-3.5 w-3.5" />
+                        <span>Approve & Execute</span>
+                      </button>
+                      <button
+                        onClick={() =>
+                          handleConfirmPrompt(m.interactivePrompt!.id, false, m.id)
+                        }
+                        disabled={loading}
+                        className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium px-3 py-1.5 rounded text-[11px] flex items-center space-x-1 border border-slate-700 transition"
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        <span>Cancel Action</span>
+                      </button>
                     </div>
                   </div>
+                )}
 
-                  <div className="flex items-center space-x-2 pt-1 border-t border-red-900/60">
-                    <button
-                      onClick={() =>
-                        handleConfirmPrompt(m.interactivePrompt!.id, true, m.id)
-                      }
-                      disabled={loading}
-                      className="bg-red-600 hover:bg-red-500 text-white font-medium px-3 py-1.5 rounded text-[11px] flex items-center space-x-1"
-                    >
-                      <CheckCircle className="h-3.5 w-3.5" />
-                      <span>Approve & Execute</span>
-                    </button>
-                    <button
-                      onClick={() =>
-                        handleConfirmPrompt(m.interactivePrompt!.id, false, m.id)
-                      }
-                      disabled={loading}
-                      className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium px-3 py-1.5 rounded text-[11px] flex items-center space-x-1 border border-slate-700"
-                    >
-                      <XCircle className="h-3.5 w-3.5" />
-                      <span>Cancel Action</span>
-                    </button>
-                  </div>
-                </div>
-              )}
+                {/* Real-time Streaming Deployment Widget */}
+                {m.deploymentStream && (
+                  <LiveDeploymentStreamer
+                    deploymentId={m.deploymentStream.deploymentId}
+                    repoUrl={m.deploymentStream.repoUrl}
+                    subdomain={m.deploymentStream.subdomain}
+                    wsBase={wsBase}
+                    onComplete={onRefreshData}
+                  />
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
 
-        {loading && (
-          <div className="flex items-center space-x-2 text-slate-400 py-2 px-1">
-            <RotateCw className="h-3.5 w-3.5 animate-spin text-emerald-400" />
-            <span className="text-xs font-mono">
-              Evaluating intent with TypeSafe Jev & reasoning...
-            </span>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
+          {loading && (
+            <div className="flex items-center space-x-2 text-slate-400 py-2 px-1">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+              <span className="text-xs font-mono">
+                Classifying intent with TypeSafe Jev & executing pipeline...
+              </span>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
 
-      {/* Input Form */}
-      <div className="bg-slate-950 p-3 border-t border-slate-800 flex items-center space-x-2">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              handleSendMessage();
-            }
-          }}
-          placeholder="Ask DeployMind AI to deploy, inspect logs, start/stop services, or configure variables..."
-          className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-          disabled={loading}
-        />
-        <button
-          onClick={() => handleSendMessage()}
-          disabled={loading || !input.trim()}
-          className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-lg text-xs font-medium flex items-center space-x-1.5 disabled:opacity-50 transition"
-        >
-          <Send className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Send</span>
-        </button>
+        {/* Input Bar */}
+        <div className="bg-slate-950 p-3 border-t border-slate-800 flex items-center space-x-2">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSendMessage();
+              }
+            }}
+            placeholder="Talk with DeployMind AI: 'Deploy https://...', 'Show logs', 'Stop service web'..."
+            className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+            disabled={loading}
+          />
+          <button
+            onClick={() => handleSendMessage()}
+            disabled={loading || !input.trim()}
+            className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-lg text-xs font-medium flex items-center space-x-1.5 disabled:opacity-50 transition shadow"
+          >
+            <Send className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Send</span>
+          </button>
+        </div>
       </div>
     </div>
   );

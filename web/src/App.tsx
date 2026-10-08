@@ -509,10 +509,10 @@ export default function App() {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6">
-        {/* TAB 0: AI FIRST CONVERSATIONAL CHAT CONSOLE */}
-        {activeTab === 'chat' && (
-          <AIChatConsole apiBase={API_BASE} onRefreshData={fetchData} />
-        )}
+        {/* TAB 0: AI FIRST CONVERSATIONAL CHAT CONSOLE (Persistently Mounted) */}
+        <div style={{ display: activeTab === 'chat' ? 'block' : 'none' }}>
+          <AIChatConsole apiBase={API_BASE} wsBase={WS_BASE} onRefreshData={fetchData} />
+        </div>
 
         {/* TAB 1: NEW DEPLOYMENT */}
         {activeTab === 'deploy' && (

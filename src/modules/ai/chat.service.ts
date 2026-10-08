@@ -154,9 +154,33 @@ export class AIChatService {
       } else if (intent.choice === 'SYSTEM_STATUS') {
         actionResult = { action: 'SYSTEM_STATUS', success: true, output: systemContext };
       } else if (intent.choice === 'DEPLOY' && intent.entities.repoUrl) {
-        // Trigger autonomous deployment in background
-        const depPromise = deploymentOrchestrator.autoDeploy(intent.entities.repoUrl);
-        actionResult = { action: 'DEPLOY', success: true, output: `Deploying ${intent.entities.repoUrl}` };
+        const repoUrl = intent.entities.repoUrl;
+        const { projectId, deploymentId, plan } = await deploymentOrchestrator.analyzeAndPlan(repoUrl);
+
+        // Execute deployment asynchronously so real-time events stream into chat
+        deploymentOrchestrator.executeDeployment({
+          deploymentId,
+          variableDecisions: plan.environmentVariables.map((v) => ({
+            key: v.key,
+            action: v.matchingVaultCredentialId ? 'use_existing' : 'create_new',
+            vaultCredentialId: v.matchingVaultCredentialId,
+            newValue: v.defaultValue || '',
+          })),
+        }).catch((err: any) => {
+          console.error('[ChatService] Background deployment error:', err?.message || err);
+        });
+
+        actionResult = {
+          action: 'DEPLOY',
+          success: true,
+          output: {
+            deploymentId,
+            projectId,
+            repoUrl,
+            subdomain: plan.suggestedSubdomain,
+            plan,
+          },
+        };
       } else if (intent.choice === 'CONFIGURE_ENV' && intent.entities.envKey && intent.entities.envValue) {
         await vaultService.storeCredential({
           keyName: intent.entities.envKey,

@@ -12,10 +12,14 @@ export class CaddyAdapter implements ProxyAdapter {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.apiUrl}/config/`, { method: 'GET', signal: AbortSignal.timeout(1500) });
+      const res = await fetch(`${this.apiUrl}/config/`, { method: 'GET', signal: AbortSignal.timeout(1000) });
       if (res.ok) return true;
     } catch {
       // API down, attempt to start Caddy container via Docker
+    }
+
+    if (process.env.NODE_ENV === 'test') {
+      return false;
     }
 
     try {
