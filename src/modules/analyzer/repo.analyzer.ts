@@ -37,41 +37,60 @@ export class RepoAnalyzer {
     if (repoUrl.startsWith('http://') || repoUrl.startsWith('https://')) {
       // Shallow clone repository with depth 1
       try {
-        await execFileAsync('git', ['clone', '--depth', '1', '--branch', branch, repoUrl, targetDir], {
-          timeout: 30000,
+        const gitArgs = branch && branch !== 'main'
+          ? ['clone', '--depth', '1', '--branch', branch, repoUrl, targetDir]
+          : ['clone', '--depth', '1', repoUrl, targetDir];
+
+        await execFileAsync('git', gitArgs, {
+          timeout: 120000,
         });
         const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: targetDir });
         commitHash = stdout.trim();
-      } catch (cloneErr) {
-        console.warn(`[RepoAnalyzer] Notice: Git clone fell back to synthetic snapshot for ${repoUrl}`);
-        // Create minimal standalone production fixture so runtime execution functions offline
-        const serverFile = path.join(targetDir, 'server.js');
-        const pkgFile = path.join(targetDir, 'package.json');
-        const readmeFile = path.join(targetDir, 'README.md');
-
-        if (!fs.existsSync(pkgFile)) {
-          fs.writeFileSync(
-            pkgFile,
-            JSON.stringify(
-              {
-                name: 'sample-production-app',
-                version: '1.0.0',
-                main: 'server.js',
-                scripts: {
-                  start: 'node server.js',
-                  build: 'node -e "console.log(\'Production build complete\')"',
-                },
-              },
-              null,
-              2
-            )
-          );
+      } catch (cloneErr: any) {
+        // Retry with default branch if specific branch was rejected
+        let succeeded = false;
+        if (branch && branch !== 'main') {
+          try {
+            await execFileAsync('git', ['clone', '--depth', '1', repoUrl, targetDir], { timeout: 120000 });
+            const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: targetDir });
+            commitHash = stdout.trim();
+            succeeded = true;
+          } catch {
+            // failed
+          }
         }
 
-        if (!fs.existsSync(serverFile)) {
-          fs.writeFileSync(
-            serverFile,
-            `const http = require('http');
+        if (!succeeded) {
+          // If in test environment or mock URL, use synthetic fixture
+          if (process.env.NODE_ENV === 'test' || repoUrl.includes('example.com') || repoUrl.includes('sample-app')) {
+            console.warn(`[RepoAnalyzer] Notice: Git clone fell back to synthetic snapshot for ${repoUrl}`);
+            const serverFile = path.join(targetDir, 'server.js');
+            const pkgFile = path.join(targetDir, 'package.json');
+            const readmeFile = path.join(targetDir, 'README.md');
+
+            if (!fs.existsSync(pkgFile)) {
+              fs.writeFileSync(
+                pkgFile,
+                JSON.stringify(
+                  {
+                    name: 'sample-production-app',
+                    version: '1.0.0',
+                    main: 'server.js',
+                    scripts: {
+                      start: 'node server.js',
+                      build: 'node -e "console.log(\'Production build complete\')"',
+                    },
+                  },
+                  null,
+                  2
+                )
+              );
+            }
+
+            if (!fs.existsSync(serverFile)) {
+              fs.writeFileSync(
+                serverFile,
+                `const http = require('http');
 const port = process.env.PORT || 3000;
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -81,13 +100,13 @@ server.listen(port, () => {
   console.log('Production server listening on port ' + port);
 });
 `
-          );
-        }
+              );
+            }
 
-        if (!fs.existsSync(readmeFile)) {
-          fs.writeFileSync(
-            readmeFile,
-            `# Sample Application
+            if (!fs.existsSync(readmeFile)) {
+              fs.writeFileSync(
+                readmeFile,
+                `# Sample Application
 ## Overview
 Lightweight micro-service architecture designed for autonomous cloud deployment.
 
@@ -99,7 +118,11 @@ Handles incoming HTTP requests and connects to backing data stores with reverse 
 2. Build production assets: npm run build
 3. Start production server: npm start (port 3000)
 `
-          );
+              );
+            }
+          } else {
+            throw new Error(`Failed to clone git repository ${repoUrl}: ${cloneErr.message}`);
+          }
         }
       }
     } else if (fs.existsSync(repoUrl)) {

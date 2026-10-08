@@ -25,8 +25,10 @@ import {
   Check,
   Cpu,
   FileText,
-  Trash2
+  Trash2,
+  MessageSquare
 } from 'lucide-react';
+import { AIChatConsole } from './components/AIChatConsole';
 
 interface Project {
   id: string;
@@ -116,7 +118,7 @@ const WS_BASE = typeof window !== 'undefined' && window.location.port === '5173'
   : (typeof window !== 'undefined' ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}` : '');
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'deploy' | 'projects' | 'vault' | 'proxy' | 'backups'>('deploy');
+  const [activeTab, setActiveTab] = useState<'chat' | 'deploy' | 'projects' | 'vault' | 'proxy' | 'backups'>('chat');
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
 
   // Deploy state
@@ -425,6 +427,17 @@ export default function App() {
         {/* Navigation Tabs */}
         <nav className="flex items-center space-x-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
           <button
+            onClick={() => setActiveTab('chat')}
+            className={`flex items-center space-x-2 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+              activeTab === 'chat'
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Sparkles className="h-3.5 w-3.5 text-emerald-300" />
+            <span className="font-semibold">AI Assistant (Claude Code)</span>
+          </button>
+          <button
             onClick={() => setActiveTab('deploy')}
             className={`flex items-center space-x-2 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
               activeTab === 'deploy'
@@ -432,7 +445,7 @@ export default function App() {
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            <Sparkles className="h-3.5 w-3.5" />
+            <Rocket className="h-3.5 w-3.5" />
             <span>Deploy</span>
           </button>
           <button
@@ -496,6 +509,11 @@ export default function App() {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6">
+        {/* TAB 0: AI FIRST CONVERSATIONAL CHAT CONSOLE */}
+        {activeTab === 'chat' && (
+          <AIChatConsole apiBase={API_BASE} onRefreshData={fetchData} />
+        )}
+
         {/* TAB 1: NEW DEPLOYMENT */}
         {activeTab === 'deploy' && (
           <div className="space-y-6">
@@ -1138,16 +1156,35 @@ export default function App() {
 
                     <div className="flex items-center justify-between text-xs pt-3 border-t border-slate-800 text-slate-400">
                       <span>{p.servicesCount} running services</span>
-                      <button
-                        onClick={() => {
-                          setRepoUrl(p.repoUrl);
-                          setActiveTab('deploy');
-                        }}
-                        className="text-emerald-400 hover:text-emerald-300 font-medium flex items-center space-x-1"
-                      >
-                        <span>Redeploy</span>
-                        <ChevronRight className="h-3.5 w-3.5" />
-                      </button>
+                      <div className="flex items-center space-x-3">
+                        <button
+                          onClick={async () => {
+                            if (window.confirm(`Are you sure you want to permanently delete project "${p.name}"? This will stop all Docker containers, delete volumes, routes, and database records.`)) {
+                              try {
+                                await fetch(`${API_BASE}/api/projects/${p.id}`, { method: 'DELETE' });
+                                fetchData();
+                              } catch (err: any) {
+                                alert(`Error deleting project: ${err.message}`);
+                              }
+                            }
+                          }}
+                          className="text-red-400 hover:text-red-300 font-medium flex items-center space-x-1 transition"
+                          title="Delete project and containers"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span>Delete</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setRepoUrl(p.repoUrl);
+                            setActiveTab('deploy');
+                          }}
+                          className="text-emerald-400 hover:text-emerald-300 font-medium flex items-center space-x-1"
+                        >
+                          <span>Redeploy</span>
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );

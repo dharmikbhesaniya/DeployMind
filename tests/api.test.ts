@@ -142,4 +142,55 @@ describe('DeployAgent Monolith REST API Endpoints', () => {
     expect(body.liveUrl).toBeDefined();
     expect(body.plan).toBeDefined();
   });
+
+  it('POST /api/ai/chat should process natural conversation with TypeSafe Jev decision classification', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/ai/chat',
+      payload: {
+        message: 'What services are running right now?',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.message).toBeDefined();
+    expect(body.intent).toBeDefined();
+    expect(body.intent.choice).toBe('SYSTEM_STATUS');
+    expect(body.intent.confidence).toBeGreaterThan(0.8);
+    expect(body.intent.riskLevel).toBe('SAFE');
+  });
+
+  it('POST /api/ai/chat should trigger interactive permission request for destructive operations', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/ai/chat',
+      payload: {
+        message: 'Delete project sample-autonomous-app completely',
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.intent.choice).toBe('DELETE_PROJECT');
+    expect(body.intent.riskLevel).toBe('DESTRUCTIVE');
+    expect(body.interactivePrompt).toBeDefined();
+    expect(body.interactivePrompt.type).toBe('permission_request');
+    expect(body.interactivePrompt.confidence).toBeGreaterThanOrEqual(90);
+
+    // Test confirmation denial
+    const confirmRes = await app.inject({
+      method: 'POST',
+      url: '/api/ai/chat/confirm',
+      payload: {
+        promptId: body.interactivePrompt.id,
+        approved: false,
+      },
+    });
+
+    expect(confirmRes.statusCode).toBe(200);
+    const confirmBody = JSON.parse(confirmRes.payload);
+    expect(confirmBody.success).toBe(true);
+    expect(confirmBody.message).toContain('cancelled');
+  });
 });

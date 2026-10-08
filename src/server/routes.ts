@@ -9,6 +9,8 @@ import { backupManager } from '../modules/backup/backup.manager.js';
 import { webhookService } from '../modules/webhooks/webhook.service.js';
 import { eventBus } from '../core/events.js';
 
+import { aiChatService } from '../modules/ai/chat.service.js';
+
 export async function registerRoutes(app: FastifyInstance) {
   // System status check
   app.get('/api/system/status', async () => {
@@ -26,6 +28,36 @@ export async function registerRoutes(app: FastifyInstance) {
         connected: isProxy,
       },
     };
+  });
+
+  // Interactive AI Agent Chat (TypeSafe Jev + ChatGPT)
+  app.post('/api/ai/chat', async (req, reply) => {
+    const body = req.body as { message: string; history?: any[] };
+    if (!body?.message) {
+      return reply.status(400).send({ error: 'message is required' });
+    }
+
+    try {
+      const response = await aiChatService.processUserMessage(body.message, body.history || []);
+      return response;
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'AI Chat processing error' });
+    }
+  });
+
+  // Interactive Claude Code Confirmation (Approve / Deny)
+  app.post('/api/ai/chat/confirm', async (req, reply) => {
+    const body = req.body as { promptId: string; approved: boolean };
+    if (!body?.promptId) {
+      return reply.status(400).send({ error: 'promptId is required' });
+    }
+
+    try {
+      const result = await aiChatService.handleConfirmation(body.promptId, Boolean(body.approved));
+      return result;
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'Confirmation handling error' });
+    }
   });
 
   // 1-Click Zero-Touch Autonomous Deployment (URL Only!)
@@ -144,6 +176,38 @@ export async function registerRoutes(app: FastifyInstance) {
     }
 
     return results;
+  });
+
+  // Delete a deployed project and purge all containers, volumes, routes, and records
+  app.delete('/api/projects/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const [project] = await db.select().from(schema.projects).where(eq(schema.projects.id, id));
+    if (!project) {
+      return reply.status(404).send({ error: 'Project not found' });
+    }
+
+    try {
+      // 1. Terminate and remove all Docker containers and proxy routes
+      const servs = await db.select().from(schema.services).where(eq(schema.services.projectId, id));
+      for (const s of servs) {
+        if (s.containerId && !s.containerId.startsWith('pid_')) {
+          await dockerService.stopAndRemove(s.containerId).catch(() => {});
+        }
+        await proxyService.removeServiceRoute(s.id).catch(() => {});
+      }
+
+      // 2. Remove deployments and project record
+      await db.delete(schema.deployments).where(eq(schema.deployments.projectId, id)).catch(() => {});
+      await db.delete(schema.services).where(eq(schema.services.projectId, id)).catch(() => {});
+      await db.delete(schema.projects).where(eq(schema.projects.id, id));
+
+      return {
+        success: true,
+        message: `Project "${project.name}" and all associated containers, data, and routes were deleted.`,
+      };
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'Failed to delete project' });
+    }
   });
 
   // List all credentials in the Vault

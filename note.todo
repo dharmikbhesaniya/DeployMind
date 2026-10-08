@@ -4,3 +4,11 @@ don't kept los more then one week of any application any how delete this regular
 
 when i try to deploye this is asking for my aws access you can see int he img 
 so fix that run in the local only not on the any cloud provider coz this application run alvays in the server where we want to deploye all the projects so make sure this thing
+
+
+handle the docake valuem and also handle the docker network so each other service can talk like repo project need DB so thay can access if have in same network
+
+and one more the give project delete button if user want to delete then they can delete entierly all thing vvaluem db data logs cash all thing appplication replated and ask user data also want to delete from the data base and delete all the thing proparly
+
+
+in this you didn't used jev by typesafe for decizon mkaing and eveluation

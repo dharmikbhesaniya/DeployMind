@@ -47,7 +47,7 @@ ENV CI=true
 ENV CSC_IDENTITY_AUTO_DISCOVERY=false
 COPY --from=builder /app ./
 EXPOSE ${port}
-CMD ["sh", "-c", "if npm run | grep -q 'start'; then npm start; elif npm run | grep -q 'preview'; then npm run preview -- --host 0.0.0.0 --port ${PORT}; elif npm run | grep -q 'dev'; then npm run dev -- --host 0.0.0.0 --port ${PORT}; else node index.js; fi"]
+CMD ["sh", "-c", "if [ -f dist/index.html ]; then npx -y serve -s dist -l ${PORT}; elif [ -f build/index.html ]; then npx -y serve -s build -l ${PORT}; elif npm run | grep -q 'start'; then npm start; elif npm run | grep -q 'preview'; then npm run preview -- --host 0.0.0.0 --port ${PORT}; elif npm run | grep -q 'dev'; then npm run dev -- --host 0.0.0.0 --port ${PORT}; else node index.js; fi"]
 `;
   }
 
