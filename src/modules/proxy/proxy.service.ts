@@ -89,6 +89,59 @@ export class ProxyService {
     }));
   }
 
+  async bindCustomDomain(params: {
+    serviceId: string;
+    hostname: string;
+    provider?: 'caddy' | 'traefik';
+  }): Promise<IngressRoute> {
+    const [service] = await db
+      .select()
+      .from(schema.services)
+      .where(eq(schema.services.id, params.serviceId));
+
+    if (!service) {
+      throw new Error(`Service not found: ${params.serviceId}`);
+    }
+
+    const cleanHostname = params.hostname.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '');
+    if (!cleanHostname) {
+      throw new Error('Valid hostname is required');
+    }
+
+    // Determine upstream target
+    let targetUpstream = `host.docker.internal:${service.internalPort}`;
+    if (service.containerId && !service.containerId.startsWith('pid_')) {
+      targetUpstream = `${service.containerId}:${service.internalPort}`;
+    }
+
+    return this.registerServiceRoute({
+      serviceId: params.serviceId,
+      hostname: cleanHostname,
+      targetUpstream,
+      provider: params.provider,
+    });
+  }
+
+  async removeRouteById(routeIdentifier: string): Promise<void> {
+    const [existing] = await db
+      .select()
+      .from(schema.domains)
+      .where(eq(schema.domains.routeIdentifier, routeIdentifier));
+
+    if (existing) {
+      const adapter = this.getAdapter(existing.proxyProvider as 'caddy' | 'traefik');
+      await adapter.removeRoute(existing.routeIdentifier);
+      await db.delete(schema.domains).where(eq(schema.domains.id, existing.id));
+    }
+  }
+
+  async updateBaseDomain(baseDomain: string): Promise<void> {
+    config.proxy.baseDomain = baseDomain;
+    if (typeof this.caddy.syncBaseDomain === 'function') {
+      await this.caddy.syncBaseDomain(baseDomain);
+    }
+  }
+
   // Restore and register all persisted routes from SQLite into active proxy engine
   async syncDatabaseRoutes(): Promise<void> {
     const rows = await db.select().from(schema.domains);

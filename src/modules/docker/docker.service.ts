@@ -135,12 +135,16 @@ export class DockerService {
           admin: {
             listen: '0.0.0.0:2019',
             enforce_origin: false,
+            origins: ['localhost:2019', '127.0.0.1:2019', '*'],
           },
           apps: {
             http: {
               servers: {
                 srv0: {
-                  listen: [':80', ':443'],
+                  listen: [':80'],
+                  automatic_https: {
+                    disable: true,
+                  },
                   routes: [],
                 },
               },
@@ -187,8 +191,8 @@ export class DockerService {
         HostConfig: {
           NetworkMode: this.networkName,
           PortBindings: {
-            '80/tcp': [{ HostIp: '0.0.0.0', HostPort: '80' }],
-            '443/tcp': [{ HostIp: '0.0.0.0', HostPort: '443' }],
+            '80/tcp': [{ HostPort: '80' }],
+            '443/tcp': [{ HostPort: '443' }],
             '2019/tcp': [{ HostIp: '0.0.0.0', HostPort: '2019' }],
           },
           Binds: [`${caddyJsonPath}:/etc/caddy/caddy.json`],

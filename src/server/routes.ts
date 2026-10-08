@@ -44,6 +44,57 @@ export async function registerRoutes(app: FastifyInstance) {
     return settingsService.getAllSettings();
   });
 
+  // Domain Management & Ingress Strategy
+  app.get('/api/system/domain', async () => {
+    const baseDomain = await settingsService.getBaseDomain();
+    return {
+      baseDomain,
+      isCustom: baseDomain !== 'localhost',
+      preview: {
+        controlPlane: baseDomain === 'localhost' ? 'http://localhost' : `http://${baseDomain}`,
+        subdomainTemplate: `*.${baseDomain}`,
+        exampleSubdomain: `recordly.${baseDomain}`,
+      },
+      dnsGuide: {
+        scenarioA: {
+          title: 'Dedicated Domain (Root Domain)',
+          description: 'Assign the entire root domain to this VPS.',
+          records: [
+            { type: 'A', name: '@', value: '<YOUR_VPS_PUBLIC_IP>', ttl: '1/2 Hour' },
+            { type: 'A', name: '*', value: '<YOUR_VPS_PUBLIC_IP>', ttl: '1/2 Hour' },
+          ],
+        },
+        scenarioB: {
+          title: 'Subdomain Delegation (Existing Website)',
+          description: 'Keep existing website on root domain untouched; route subdomains through a delegated prefix.',
+          records: [
+            { type: 'A', name: 'vps', value: '<YOUR_VPS_PUBLIC_IP>', ttl: '1/2 Hour' },
+            { type: 'A', name: '*.vps', value: '<YOUR_VPS_PUBLIC_IP>', ttl: '1/2 Hour' },
+          ],
+        },
+      },
+    };
+  });
+
+  app.post('/api/system/domain', async (req, reply) => {
+    const body = req.body as { baseDomain: string };
+    if (!body?.baseDomain || typeof body.baseDomain !== 'string') {
+      return reply.status(400).send({ error: 'baseDomain is required' });
+    }
+
+    try {
+      const updated = await settingsService.setBaseDomain(body.baseDomain);
+      await proxyService.updateBaseDomain(updated);
+      return {
+        success: true,
+        baseDomain: updated,
+        message: `Base domain updated to "${updated}". All new deployments will generate *.${updated} subdomains.`,
+      };
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'Failed to update base domain' });
+    }
+  });
+
   // Interactive AI Agent Chat (TypeSafe Jev + ChatGPT)
   app.post('/api/ai/chat', async (req, reply) => {
     const body = req.body as { message: string; history?: any[] };
@@ -311,6 +362,35 @@ export async function registerRoutes(app: FastifyInstance) {
   // List all proxy routes
   app.get('/api/routes', async () => {
     return proxyService.listAllRoutes();
+  });
+
+  // Bind custom domain or custom subdomain to a deployed service
+  app.post('/api/routes/custom', async (req, reply) => {
+    const body = req.body as { serviceId: string; hostname: string };
+    if (!body?.serviceId || !body?.hostname) {
+      return reply.status(400).send({ error: 'serviceId and hostname are required' });
+    }
+
+    try {
+      const route = await proxyService.bindCustomDomain({
+        serviceId: body.serviceId,
+        hostname: body.hostname,
+      });
+      return { success: true, route };
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'Failed to bind custom domain' });
+    }
+  });
+
+  // Remove proxy route by route identifier
+  app.delete('/api/routes/:routeIdentifier', async (req, reply) => {
+    const { routeIdentifier } = req.params as { routeIdentifier: string };
+    try {
+      await proxyService.removeRouteById(routeIdentifier);
+      return { success: true };
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'Failed to remove route' });
+    }
   });
 
   // WebSocket for real-time deployment logs

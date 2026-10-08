@@ -29,7 +29,7 @@ async function bootstrap() {
     console.log(`🧠 AI Reasoner Provider: ${config.ai.provider.toUpperCase()} (${config.ai.model})`);
 
     // Warm up reverse proxy ingress & restore persisted routes
-    proxyService.syncDatabaseRoutes().catch((err) => {
+    await proxyService.syncDatabaseRoutes().catch((err) => {
       console.warn('[Bootstrap] Notice: Ingress proxy route sync deferred:', err?.message || err);
     });
   } catch (err) {

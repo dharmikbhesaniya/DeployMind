@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from "react";
 import {
   Rocket,
   Shield,
@@ -26,10 +26,12 @@ import {
   Cpu,
   FileText,
   Trash2,
-  MessageSquare
-} from 'lucide-react';
-import { AIChatConsole } from './components/AIChatConsole';
-import { CLIENT_CONSTANTS } from './config/constants';
+  MessageSquare,
+  HelpCircle,
+  Settings,
+} from "lucide-react";
+import { AIChatConsole } from "./components/AIChatConsole";
+import { CLIENT_CONSTANTS } from "./config/constants";
 
 interface Project {
   id: string;
@@ -54,7 +56,7 @@ interface DeploymentPlan {
   projectName: string;
   framework: string;
   runtime: string;
-  runtimeStrategy?: 'docker_priority' | 'native_production';
+  runtimeStrategy?: "docker_priority" | "native_production";
   readmeSummary?: {
     projectOverview: string;
     howItWorks: string;
@@ -70,7 +72,11 @@ interface DeploymentPlan {
   suggestedSubdomain: string;
   environmentVariables: Array<{
     key: string;
-    type: 'AUTO_GENERATED_SECRET' | 'INTERNAL_INFRASTRUCTURE' | 'EXTERNAL_REQUIRED' | 'OPTIONAL_DEFAULT';
+    type:
+      | "AUTO_GENERATED_SECRET"
+      | "INTERNAL_INFRASTRUCTURE"
+      | "EXTERNAL_REQUIRED"
+      | "OPTIONAL_DEFAULT";
     description: string;
     defaultValue?: string;
     matchingVaultCredentialId?: string;
@@ -114,11 +120,13 @@ const API_BASE = CLIENT_CONSTANTS.API_BASE_URL;
 const WS_BASE = CLIENT_CONSTANTS.WS_BASE_URL;
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'chat' | 'deploy' | 'projects' | 'vault' | 'proxy' | 'backups'>('chat');
+  const [activeTab, setActiveTab] = useState<
+    "chat" | "deploy" | "projects" | "vault" | "proxy" | "backups"
+  >("chat");
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
 
   // Deploy state
-  const [repoUrl, setRepoUrl] = useState('');
+  const [repoUrl, setRepoUrl] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [autoDeploying, setAutoDeploying] = useState(false);
   const [planResult, setPlanResult] = useState<{
@@ -126,19 +134,26 @@ export default function App() {
     deploymentId: string;
     plan: DeploymentPlan;
   } | null>(null);
-  const [varDecisions, setVarDecisions] = useState<Record<string, {
-    action: 'use_existing' | 'create_new';
-    vaultCredentialId?: string;
-    newValue?: string;
-    description?: string;
-  }>>({});
+  const [varDecisions, setVarDecisions] = useState<
+    Record<
+      string,
+      {
+        action: "use_existing" | "create_new";
+        vaultCredentialId?: string;
+        newValue?: string;
+        description?: string;
+      }
+    >
+  >({});
   const [deploying, setDeploying] = useState(false);
-  const [deploymentLogs, setDeploymentLogs] = useState<Array<{
-    timestamp: number;
-    level: string;
-    stage: string;
-    message: string;
-  }>>([]);
+  const [deploymentLogs, setDeploymentLogs] = useState<
+    Array<{
+      timestamp: number;
+      level: string;
+      stage: string;
+      message: string;
+    }>
+  >([]);
   const [liveUrl, setLiveUrl] = useState<string | null>(null);
 
   // Lists state
@@ -149,37 +164,57 @@ export default function App() {
   const [runningBackup, setRunningBackup] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
+  // Domain Management State
+  const [baseDomain, setBaseDomain] = useState<string>("localhost");
+  const [domainInput, setDomainInput] = useState<string>("");
+  const [isSavingDomain, setIsSavingDomain] = useState<boolean>(false);
+  const [domainSaveStatus, setDomainSaveStatus] = useState<string | null>(null);
+  const [showDnsGuide, setShowDnsGuide] = useState<boolean>(false);
+  const [dnsScenario, setDnsScenario] = useState<"scenarioB" | "scenarioA">(
+    "scenarioB",
+  );
+
   // Add Credential Modal
   const [showAddCred, setShowAddCred] = useState(false);
-  const [newCredKey, setNewCredKey] = useState('');
-  const [newCredValue, setNewCredValue] = useState('');
-  const [newCredDesc, setNewCredDesc] = useState('');
-  const [newCredScope, setNewCredScope] = useState<'GLOBAL' | 'PROJECT_SCOPED'>('GLOBAL');
+  const [newCredKey, setNewCredKey] = useState("");
+  const [newCredValue, setNewCredValue] = useState("");
+  const [newCredDesc, setNewCredDesc] = useState("");
+  const [newCredScope, setNewCredScope] = useState<"GLOBAL" | "PROJECT_SCOPED">(
+    "GLOBAL",
+  );
 
   // Custom Variables in Plan Review
-  const [customVars, setCustomVars] = useState<Array<{ key: string; value: string; description: string }>>([]);
+  const [customVars, setCustomVars] = useState<
+    Array<{ key: string; value: string; description: string }>
+  >([]);
   const [showAddCustomVar, setShowAddCustomVar] = useState(false);
-  const [newCustomKey, setNewCustomKey] = useState('');
-  const [newCustomValue, setNewCustomValue] = useState('');
-  const [newCustomDesc, setNewCustomDesc] = useState('');
+  const [newCustomKey, setNewCustomKey] = useState("");
+  const [newCustomValue, setNewCustomValue] = useState("");
+  const [newCustomDesc, setNewCustomDesc] = useState("");
 
   const handleAddCustomVar = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCustomKey.trim()) return;
-    const cleanKey = newCustomKey.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    const cleanKey = newCustomKey
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9_]/g, "_");
     const desc = newCustomDesc.trim() || `Configured variable for ${cleanKey}`;
-    setCustomVars((prev) => [...prev, { key: cleanKey, value: newCustomValue, description: desc }]);
+    setCustomVars((prev) => [
+      ...prev,
+      { key: cleanKey, value: newCustomValue, description: desc },
+    ]);
     setVarDecisions((prev) => ({
       ...prev,
       [cleanKey]: {
-        action: 'create_new',
+        action: "create_new",
         newValue: newCustomValue,
         description: desc,
       },
     }));
-    setNewCustomKey('');
-    setNewCustomValue('');
-    setNewCustomDesc('');
+    setNewCustomKey("");
+    setNewCustomValue("");
+    setNewCustomDesc("");
     setShowAddCustomVar(false);
   };
 
@@ -197,20 +232,71 @@ export default function App() {
   // Fetch initial data
   const fetchData = async () => {
     try {
-      const [sysRes, projRes, vaultRes, routeRes, backupRes] = await Promise.all([
-        fetch(`${API_BASE}/api/system/status`),
-        fetch(`${API_BASE}/api/projects`),
-        fetch(`${API_BASE}/api/vault/credentials`),
-        fetch(`${API_BASE}/api/routes`),
-        fetch(`${API_BASE}/api/backups`),
-      ]);
+      const [sysRes, projRes, vaultRes, routeRes, backupRes, domainRes] =
+        await Promise.all([
+          fetch(`${API_BASE}/api/system/status`),
+          fetch(`${API_BASE}/api/projects`),
+          fetch(`${API_BASE}/api/vault/credentials`),
+          fetch(`${API_BASE}/api/routes`),
+          fetch(`${API_BASE}/api/backups`),
+          fetch(`${API_BASE}/api/system/domain`),
+        ]);
       if (sysRes.ok) setSystemStatus(await sysRes.json());
       if (projRes.ok) setProjects(await projRes.json());
       if (vaultRes.ok) setVaultCreds(await vaultRes.json());
       if (routeRes.ok) setRoutes(await routeRes.json());
       if (backupRes.ok) setBackups(await backupRes.json());
+      if (domainRes.ok) {
+        const dData = await domainRes.json();
+        setBaseDomain(dData.baseDomain || "localhost");
+        setDomainInput((prev) =>
+          prev ? prev : dData.baseDomain || "localhost",
+        );
+      }
     } catch {
       // Backend maybe loading
+    }
+  };
+
+  const handleSaveDomain = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!domainInput.trim()) return;
+    setIsSavingDomain(true);
+    setDomainSaveStatus(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/system/domain`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseDomain: domainInput.trim() }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setBaseDomain(data.baseDomain);
+        setDomainSaveStatus(`Saved! Base domain set to ${data.baseDomain}`);
+        setTimeout(() => setDomainSaveStatus(null), 4000);
+      } else {
+        const err = await res.json();
+        setDomainSaveStatus(`Error: ${err.error || "Failed to save"}`);
+      }
+    } catch (err: any) {
+      setDomainSaveStatus(`Network error: ${err.message}`);
+    } finally {
+      setIsSavingDomain(false);
+    }
+  };
+
+  const handleDeleteRoute = async (routeId: string) => {
+    if (!window.confirm("Are you sure you want to remove this ingress route?"))
+      return;
+    try {
+      const res = await fetch(`${API_BASE}/api/routes/${routeId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setRoutes((prev) => prev.filter((r) => r.routeId !== routeId));
+      }
+    } catch {
+      // Ignore
     }
   };
 
@@ -224,13 +310,15 @@ export default function App() {
   useEffect(() => {
     if (!planResult?.deploymentId) return;
 
-    const ws = new WebSocket(`${WS_BASE}/ws/logs?deploymentId=${planResult.deploymentId}`);
+    const ws = new WebSocket(
+      `${WS_BASE}/ws/logs?deploymentId=${planResult.deploymentId}`,
+    );
 
     ws.onmessage = (event) => {
       try {
         const log = JSON.parse(event.data);
         setDeploymentLogs((prev) => [...prev, log]);
-        logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        logEndRef.current?.scrollIntoView({ behavior: "smooth" });
       } catch {
         // Ignored
       }
@@ -252,8 +340,8 @@ export default function App() {
 
     try {
       const res = await fetch(`${API_BASE}/api/deployments/auto-deploy`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repoUrl }),
       });
       const data = await res.json();
@@ -266,7 +354,7 @@ export default function App() {
         setLiveUrl(data.liveUrl);
         fetchData();
       } else {
-        alert(data.error || 'Auto-deployment failed');
+        alert(data.error || "Auto-deployment failed");
       }
     } catch (err: any) {
       alert(`Auto-deploy network error: ${err.message}`);
@@ -287,8 +375,8 @@ export default function App() {
 
     try {
       const res = await fetch(`${API_BASE}/api/deployments/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repoUrl }),
       });
       const data = await res.json();
@@ -303,20 +391,20 @@ export default function App() {
         for (const v of data.plan.environmentVariables) {
           if (v.matchingVaultCredentialId) {
             initialDecisions[v.key] = {
-              action: 'use_existing',
+              action: "use_existing",
               vaultCredentialId: v.matchingVaultCredentialId,
             };
           } else {
             initialDecisions[v.key] = {
-              action: 'create_new',
-              newValue: v.defaultValue || '',
+              action: "create_new",
+              newValue: v.defaultValue || "",
               description: v.description,
             };
           }
         }
         setVarDecisions(initialDecisions);
       } else {
-        alert(data.error || 'Repository analysis failed');
+        alert(data.error || "Repository analysis failed");
       }
     } catch (err: any) {
       alert(`Network error: ${err.message}`);
@@ -330,18 +418,20 @@ export default function App() {
     if (!planResult) return;
     setDeploying(true);
 
-    const formattedDecisions = Object.entries(varDecisions).map(([key, dec]) => ({
-      key,
-      action: dec.action,
-      vaultCredentialId: dec.vaultCredentialId,
-      newValue: dec.newValue,
-      description: dec.description,
-    }));
+    const formattedDecisions = Object.entries(varDecisions).map(
+      ([key, dec]) => ({
+        key,
+        action: dec.action,
+        vaultCredentialId: dec.vaultCredentialId,
+        newValue: dec.newValue,
+        description: dec.description,
+      }),
+    );
 
     try {
       const res = await fetch(`${API_BASE}/api/deployments/execute`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           deploymentId: planResult.deploymentId,
           variableDecisions: formattedDecisions,
@@ -353,7 +443,7 @@ export default function App() {
         setLiveUrl(data.liveUrl);
         fetchData();
       } else {
-        alert(data.error || 'Deployment execution failed');
+        alert(data.error || "Deployment execution failed");
       }
     } catch (err: any) {
       alert(`Deployment error: ${err.message}`);
@@ -366,7 +456,9 @@ export default function App() {
   const handleRunBackup = async () => {
     setRunningBackup(true);
     try {
-      const res = await fetch(`${API_BASE}/api/backups/run`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/backups/run`, {
+        method: "POST",
+      });
       if (res.ok) fetchData();
     } finally {
       setRunningBackup(false);
@@ -380,8 +472,8 @@ export default function App() {
 
     try {
       const res = await fetch(`${API_BASE}/api/vault/credentials`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           keyName: newCredKey,
           value: newCredValue,
@@ -391,9 +483,9 @@ export default function App() {
       });
       if (res.ok) {
         setShowAddCred(false);
-        setNewCredKey('');
-        setNewCredValue('');
-        setNewCredDesc('');
+        setNewCredKey("");
+        setNewCredValue("");
+        setNewCredDesc("");
         fetchData();
       }
     } catch {
@@ -411,78 +503,82 @@ export default function App() {
           </div>
           <div>
             <div className="flex items-center space-x-2">
-              <span className="font-bold text-lg tracking-tight text-white">DeployMind</span>
+              <span className="font-bold text-lg tracking-tight text-white">
+                DeployMind
+              </span>
               <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">
                 AI MONOLITH
               </span>
             </div>
-            <p className="text-xs text-slate-400">Zero-Config Autonomous Self-Hosting</p>
+            <p className="text-xs text-slate-400">
+              Zero-Config Autonomous Self-Hosting
+            </p>
           </div>
         </div>
 
         {/* Navigation Tabs */}
         <nav className="flex items-center space-x-1 bg-slate-900 border border-slate-800 rounded-lg p-1">
           <button
-            onClick={() => setActiveTab('chat')}
+            onClick={() => setActiveTab("chat")}
             className={`flex items-center space-x-2 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
-              activeTab === 'chat'
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
+              activeTab === "chat"
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "text-slate-400 hover:text-slate-200"
             }`}
           >
             <Sparkles className="h-3.5 w-3.5 text-emerald-300" />
             <span className="font-semibold">AI Assistant (Claude Code)</span>
           </button>
           <button
-            onClick={() => setActiveTab('deploy')}
+            onClick={() => setActiveTab("deploy")}
             className={`flex items-center space-x-2 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
-              activeTab === 'deploy'
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
+              activeTab === "deploy"
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "text-slate-400 hover:text-slate-200"
             }`}
           >
             <Rocket className="h-3.5 w-3.5" />
             <span>Deploy</span>
           </button>
           <button
-            onClick={() => setActiveTab('projects')}
+            onClick={() => setActiveTab("projects")}
             className={`flex items-center space-x-2 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
-              activeTab === 'projects'
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
+              activeTab === "projects"
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "text-slate-400 hover:text-slate-200"
             }`}
           >
             <Layers className="h-3.5 w-3.5" />
             <span>Projects ({projects.length})</span>
           </button>
           <button
-            onClick={() => setActiveTab('vault')}
+            onClick={() => setActiveTab("vault")}
             className={`flex items-center space-x-2 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
-              activeTab === 'vault'
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
+              activeTab === "vault"
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "text-slate-400 hover:text-slate-200"
             }`}
           >
             <KeyRound className="h-3.5 w-3.5" />
             <span>Vault ({vaultCreds.length})</span>
           </button>
           <button
-            onClick={() => setActiveTab('proxy')}
+            onClick={() => setActiveTab("proxy")}
             className={`flex items-center space-x-2 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
-              activeTab === 'proxy'
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
+              activeTab === "proxy"
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "text-slate-400 hover:text-slate-200"
             }`}
           >
             <Globe className="h-3.5 w-3.5" />
             <span>Proxy ({routes.length})</span>
           </button>
           <button
-            onClick={() => setActiveTab('backups')}
+            onClick={() => setActiveTab("backups")}
             className={`flex items-center space-x-2 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
-              activeTab === 'backups'
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
+              activeTab === "backups"
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "text-slate-400 hover:text-slate-200"
             }`}
           >
             <Archive className="h-3.5 w-3.5" />
@@ -493,12 +589,16 @@ export default function App() {
         {/* System Status Indicators */}
         <div className="flex items-center space-x-3 text-xs font-mono">
           <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-md">
-            <span className={`h-2 w-2 rounded-full ${systemStatus?.docker === 'connected' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+            <span
+              className={`h-2 w-2 rounded-full ${systemStatus?.docker === "connected" ? "bg-emerald-500" : "bg-amber-500"}`}
+            />
             <span className="text-slate-400">Docker</span>
           </div>
           <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-md">
             <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            <span className="text-slate-400 uppercase">{systemStatus?.proxy.provider || 'CADDY'}</span>
+            <span className="text-slate-400 uppercase">
+              {systemStatus?.proxy.provider || "CADDY"}
+            </span>
           </div>
         </div>
       </header>
@@ -506,12 +606,16 @@ export default function App() {
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6">
         {/* TAB 0: AI FIRST CONVERSATIONAL CHAT CONSOLE (Persistently Mounted) */}
-        <div style={{ display: activeTab === 'chat' ? 'block' : 'none' }}>
-          <AIChatConsole apiBase={API_BASE} wsBase={WS_BASE} onRefreshData={fetchData} />
+        <div style={{ display: activeTab === "chat" ? "block" : "none" }}>
+          <AIChatConsole
+            apiBase={API_BASE}
+            wsBase={WS_BASE}
+            onRefreshData={fetchData}
+          />
         </div>
 
         {/* TAB 1: NEW DEPLOYMENT */}
-        {activeTab === 'deploy' && (
+        {activeTab === "deploy" && (
           <div className="space-y-6">
             {/* Hero Input Box */}
             <div className="bg-gradient-to-b from-slate-900 to-slate-900/60 border border-slate-800 rounded-xl p-6 shadow-xl">
@@ -524,7 +628,10 @@ export default function App() {
                   Paste Repository URL & Go Live
                 </h1>
                 <p className="text-sm text-slate-400 mb-5">
-                  No Dockerfile? No problem. The agent inspects code, synthesizes missing Dockerfiles, provisions shared PostgreSQL/Redis, wires secrets, and configures SSL routing automatically.
+                  No Dockerfile? No problem. The agent inspects code,
+                  synthesizes missing Dockerfiles, provisions shared
+                  PostgreSQL/Redis, wires secrets, and configures SSL routing
+                  automatically.
                 </p>
 
                 <div className="space-y-3">
@@ -609,8 +716,13 @@ export default function App() {
                   <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
                     <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
                       <div>
-                        <h2 className="text-base font-semibold text-white">Autonomous Deployment Plan</h2>
-                        <p className="text-xs text-slate-400">Synthesized from codebase manifests and README specifications</p>
+                        <h2 className="text-base font-semibold text-white">
+                          Autonomous Deployment Plan
+                        </h2>
+                        <p className="text-xs text-slate-400">
+                          Synthesized from codebase manifests and README
+                          specifications
+                        </p>
                       </div>
                       <span className="px-2.5 py-1 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 text-xs font-mono">
                         Port {planResult.plan.exposedPort}
@@ -618,32 +730,40 @@ export default function App() {
                     </div>
 
                     {/* Priority 1 vs Priority 2 Runtime Strategy Banner */}
-                    <div className={`mb-4 p-3 rounded-lg border text-xs flex items-center justify-between ${
-                      planResult.plan.runtimeStrategy === 'docker_priority'
-                        ? 'bg-blue-950/30 border-blue-800/60 text-blue-300'
-                        : 'bg-amber-950/30 border-amber-800/60 text-amber-300'
-                    }`}>
+                    <div
+                      className={`mb-4 p-3 rounded-lg border text-xs flex items-center justify-between ${
+                        planResult.plan.runtimeStrategy === "docker_priority"
+                          ? "bg-blue-950/30 border-blue-800/60 text-blue-300"
+                          : "bg-amber-950/30 border-amber-800/60 text-amber-300"
+                      }`}
+                    >
                       <div className="flex items-center space-x-2.5">
                         <Cpu className="h-4 w-4 flex-shrink-0" />
                         <div>
                           <span className="font-semibold uppercase tracking-wider block">
-                            {planResult.plan.runtimeStrategy === 'docker_priority'
-                              ? 'Runtime: Priority 1 - Docker Container'
-                              : 'Runtime: Priority 2 Fallback - Native Host (Strict Production)'}
+                            {planResult.plan.runtimeStrategy ===
+                            "docker_priority"
+                              ? "Runtime: Priority 1 - Docker Container"
+                              : "Runtime: Priority 2 Fallback - Native Host (Strict Production)"}
                           </span>
                           <span className="text-[11px] text-slate-400">
-                            {planResult.plan.runtimeStrategy === 'docker_priority'
-                              ? 'Full container network isolation, 1024MB RAM & 1 CPU constraints.'
-                              : 'Docker offline. Running directly in production mode; devDependencies pruned to maximize storage, RAM & CPU efficiency.'}
+                            {planResult.plan.runtimeStrategy ===
+                            "docker_priority"
+                              ? "Full container network isolation, 1024MB RAM & 1 CPU constraints."
+                              : "Docker offline. Running directly in production mode; devDependencies pruned to maximize storage, RAM & CPU efficiency."}
                           </span>
                         </div>
                       </div>
-                      <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-bold ${
-                        planResult.plan.runtimeStrategy === 'docker_priority'
-                          ? 'bg-blue-900/60 text-blue-200 border border-blue-700'
-                          : 'bg-amber-900/60 text-amber-200 border border-amber-700'
-                      }`}>
-                        {planResult.plan.runtimeStrategy === 'docker_priority' ? 'ISOLATED' : 'STRICT PROD'}
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded font-mono font-bold ${
+                          planResult.plan.runtimeStrategy === "docker_priority"
+                            ? "bg-blue-900/60 text-blue-200 border border-blue-700"
+                            : "bg-amber-900/60 text-amber-200 border border-amber-700"
+                        }`}
+                      >
+                        {planResult.plan.runtimeStrategy === "docker_priority"
+                          ? "ISOLATED"
+                          : "STRICT PROD"}
                       </span>
                     </div>
 
@@ -652,38 +772,69 @@ export default function App() {
                       <div className="mb-4 bg-slate-950 border border-slate-800/80 rounded-lg p-3.5 text-xs space-y-2">
                         <div className="flex items-center space-x-2 text-slate-300 font-semibold">
                           <FileText className="h-3.5 w-3.5 text-emerald-400" />
-                          <span>README Semantic Understanding & Setup Workflow</span>
+                          <span>
+                            README Semantic Understanding & Setup Workflow
+                          </span>
                         </div>
-                        <p className="text-slate-400">{planResult.plan.readmeSummary.projectOverview}</p>
+                        <p className="text-slate-400">
+                          {planResult.plan.readmeSummary.projectOverview}
+                        </p>
                         {planResult.plan.readmeSummary.howItWorks && (
                           <div className="bg-slate-900/80 p-2 rounded border border-slate-800 text-slate-300">
-                            <span className="text-slate-500 font-mono text-[10px] block uppercase">Architecture</span>
+                            <span className="text-slate-500 font-mono text-[10px] block uppercase">
+                              Architecture
+                            </span>
                             {planResult.plan.readmeSummary.howItWorks}
                           </div>
                         )}
-                        {planResult.plan.readmeSummary.setupWorkflow && planResult.plan.readmeSummary.setupWorkflow.length > 0 && (
-                          <div>
-                            <span className="text-slate-500 font-mono text-[10px] block uppercase mb-1">Discovered Setup Steps</span>
-                            <div className="flex flex-wrap gap-1.5">
-                              {planResult.plan.readmeSummary.setupWorkflow.map((step, sIdx) => (
-                                <span key={sIdx} className="bg-slate-900 text-slate-300 px-2 py-0.5 rounded border border-slate-800 text-[11px]">
-                                  {step}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        <div className="flex flex-wrap gap-3 pt-1 text-[11px] text-slate-400">
-                          {planResult.plan.readmeSummary.detectedBuildCommand && (
+                        {planResult.plan.readmeSummary.setupWorkflow &&
+                          planResult.plan.readmeSummary.setupWorkflow.length >
+                            0 && (
                             <div>
-                              <span className="text-slate-500">Production Build: </span>
-                              <code className="text-emerald-400 font-mono">{planResult.plan.readmeSummary.detectedBuildCommand}</code>
+                              <span className="text-slate-500 font-mono text-[10px] block uppercase mb-1">
+                                Discovered Setup Steps
+                              </span>
+                              <div className="flex flex-wrap gap-1.5">
+                                {planResult.plan.readmeSummary.setupWorkflow.map(
+                                  (step, sIdx) => (
+                                    <span
+                                      key={sIdx}
+                                      className="bg-slate-900 text-slate-300 px-2 py-0.5 rounded border border-slate-800 text-[11px]"
+                                    >
+                                      {step}
+                                    </span>
+                                  ),
+                                )}
+                              </div>
                             </div>
                           )}
-                          {planResult.plan.readmeSummary.detectedStartCommand && (
+                        <div className="flex flex-wrap gap-3 pt-1 text-[11px] text-slate-400">
+                          {planResult.plan.readmeSummary
+                            .detectedBuildCommand && (
                             <div>
-                              <span className="text-slate-500">Production Start: </span>
-                              <code className="text-emerald-400 font-mono">{planResult.plan.readmeSummary.detectedStartCommand}</code>
+                              <span className="text-slate-500">
+                                Production Build:{" "}
+                              </span>
+                              <code className="text-emerald-400 font-mono">
+                                {
+                                  planResult.plan.readmeSummary
+                                    .detectedBuildCommand
+                                }
+                              </code>
+                            </div>
+                          )}
+                          {planResult.plan.readmeSummary
+                            .detectedStartCommand && (
+                            <div>
+                              <span className="text-slate-500">
+                                Production Start:{" "}
+                              </span>
+                              <code className="text-emerald-400 font-mono">
+                                {
+                                  planResult.plan.readmeSummary
+                                    .detectedStartCommand
+                                }
+                              </code>
                             </div>
                           )}
                         </div>
@@ -692,40 +843,67 @@ export default function App() {
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs mb-4">
                       <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                        <span className="text-slate-500 block mb-0.5">Project</span>
-                        <span className="font-medium text-slate-200">{planResult.plan.projectName}</span>
+                        <span className="text-slate-500 block mb-0.5">
+                          Project
+                        </span>
+                        <span className="font-medium text-slate-200">
+                          {planResult.plan.projectName}
+                        </span>
                       </div>
                       <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                        <span className="text-slate-500 block mb-0.5">Runtime / Framework</span>
-                        <span className="font-medium text-slate-200 uppercase">{planResult.plan.framework}</span>
+                        <span className="text-slate-500 block mb-0.5">
+                          Runtime / Framework
+                        </span>
+                        <span className="font-medium text-slate-200 uppercase">
+                          {planResult.plan.framework}
+                        </span>
                       </div>
                       <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                        <span className="text-slate-500 block mb-0.5">Subdomain</span>
-                        <span className="font-medium text-emerald-400">{planResult.plan.suggestedSubdomain}</span>
+                        <span className="text-slate-500 block mb-0.5">
+                          Subdomain
+                        </span>
+                        <span className="font-medium text-emerald-400">
+                          {planResult.plan.suggestedSubdomain}
+                        </span>
                       </div>
                       <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                        <span className="text-slate-500 block mb-0.5">Proxy Ingress</span>
-                        <span className="font-medium text-slate-200 uppercase">{systemStatus?.proxy.provider || 'CADDY'}</span>
+                        <span className="text-slate-500 block mb-0.5">
+                          Proxy Ingress
+                        </span>
+                        <span className="font-medium text-slate-200 uppercase">
+                          {systemStatus?.proxy.provider || "CADDY"}
+                        </span>
                       </div>
                     </div>
 
                     {/* Shared Infrastructure Dependencies */}
                     {planResult.plan.requiredBackingServices.length > 0 && (
                       <div className="mb-4">
-                        <span className="text-xs font-semibold text-slate-300 block mb-2">Backing Services Managed:</span>
+                        <span className="text-xs font-semibold text-slate-300 block mb-2">
+                          Backing Services Managed:
+                        </span>
                         <div className="space-y-1.5">
-                          {planResult.plan.requiredBackingServices.map((s, idx) => (
-                            <div key={idx} className="flex items-center justify-between text-xs bg-slate-950 border border-slate-800 px-3 py-2 rounded-lg">
-                              <div className="flex items-center space-x-2">
-                                <Database className="h-3.5 w-3.5 text-emerald-400" />
-                                <span className="font-medium uppercase text-slate-200">{s.serviceType}</span>
-                                <span className="text-slate-500">({s.reason})</span>
+                          {planResult.plan.requiredBackingServices.map(
+                            (s, idx) => (
+                              <div
+                                key={idx}
+                                className="flex items-center justify-between text-xs bg-slate-950 border border-slate-800 px-3 py-2 rounded-lg"
+                              >
+                                <div className="flex items-center space-x-2">
+                                  <Database className="h-3.5 w-3.5 text-emerald-400" />
+                                  <span className="font-medium uppercase text-slate-200">
+                                    {s.serviceType}
+                                  </span>
+                                  <span className="text-slate-500">
+                                    ({s.reason})
+                                  </span>
+                                </div>
+                                <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px]">
+                                  Multi-Tenant Reuse
+                                </span>
                               </div>
-                              <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px]">
-                                Multi-Tenant Reuse
-                              </span>
-                            </div>
-                          ))}
+                            ),
+                          )}
                         </div>
                       </div>
                     )}
@@ -735,9 +913,12 @@ export default function App() {
                   <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
                     <div className="border-b border-slate-800 pb-3 mb-4 flex items-center justify-between">
                       <div>
-                        <h3 className="text-base font-semibold text-white">Project Dependencies & Environment Variables</h3>
+                        <h3 className="text-base font-semibold text-white">
+                          Project Dependencies & Environment Variables
+                        </h3>
                         <p className="text-xs text-slate-400">
-                          AI detected only actual dependencies from repository. You can configure values or add custom variables.
+                          AI detected only actual dependencies from repository.
+                          You can configure values or add custom variables.
                         </p>
                       </div>
                       <button
@@ -746,14 +927,21 @@ export default function App() {
                         className="bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 hover:border-emerald-500/50 text-xs font-medium px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all"
                       >
                         <Plus className="h-3.5 w-3.5" />
-                        <span>{showAddCustomVar ? 'Cancel' : 'Add Custom Variable'}</span>
+                        <span>
+                          {showAddCustomVar ? "Cancel" : "Add Custom Variable"}
+                        </span>
                       </button>
                     </div>
 
                     {/* Inline Add Custom Variable Form */}
                     {showAddCustomVar && (
-                      <form onSubmit={handleAddCustomVar} className="mb-4 bg-slate-950 border border-emerald-800/60 rounded-lg p-3.5 space-y-2.5">
-                        <div className="text-xs font-semibold text-emerald-400">New Custom Environment Variable</div>
+                      <form
+                        onSubmit={handleAddCustomVar}
+                        className="mb-4 bg-slate-950 border border-emerald-800/60 rounded-lg p-3.5 space-y-2.5"
+                      >
+                        <div className="text-xs font-semibold text-emerald-400">
+                          New Custom Environment Variable
+                        </div>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                           <input
                             type="text"
@@ -798,28 +986,43 @@ export default function App() {
                     )}
 
                     <div className="space-y-3">
-                      {planResult.plan.environmentVariables.length === 0 && customVars.length === 0 && (
-                        <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 text-center text-xs text-slate-400">
-                          <CheckCircle2 className="h-4 w-4 text-emerald-400 mx-auto mb-1" />
-                          <span>No mandatory environment variable dependencies detected in this repository. Click "Add Custom Variable" above if your application requires custom variables, or deploy directly.</span>
-                        </div>
-                      )}
+                      {planResult.plan.environmentVariables.length === 0 &&
+                        customVars.length === 0 && (
+                          <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 text-center text-xs text-slate-400">
+                            <CheckCircle2 className="h-4 w-4 text-emerald-400 mx-auto mb-1" />
+                            <span>
+                              No mandatory environment variable dependencies
+                              detected in this repository. Click "Add Custom
+                              Variable" above if your application requires
+                              custom variables, or deploy directly.
+                            </span>
+                          </div>
+                        )}
 
                       {/* Detected Repository Dependencies */}
                       {planResult.plan.environmentVariables.map((v) => {
                         const currentDecision = varDecisions[v.key];
 
                         return (
-                          <div key={v.key} className="bg-slate-950 border border-slate-800 rounded-lg p-3.5">
+                          <div
+                            key={v.key}
+                            className="bg-slate-950 border border-slate-800 rounded-lg p-3.5"
+                          >
                             <div className="flex items-start justify-between mb-2">
                               <div>
                                 <div className="flex items-center space-x-2">
-                                  <span className="font-mono text-sm font-semibold text-emerald-400">{v.key}</span>
+                                  <span className="font-mono text-sm font-semibold text-emerald-400">
+                                    {v.key}
+                                  </span>
                                   <span className="text-[10px] px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-400 uppercase">
-                                    {v.type === 'OPTIONAL_DEFAULT' ? 'OPTIONAL (HAS DEFAULT)' : 'REQUIRED DEPENDENCY'}
+                                    {v.type === "OPTIONAL_DEFAULT"
+                                      ? "OPTIONAL (HAS DEFAULT)"
+                                      : "REQUIRED DEPENDENCY"}
                                   </span>
                                 </div>
-                                <p className="text-xs text-slate-400 mt-0.5">{v.description}</p>
+                                <p className="text-xs text-slate-400 mt-0.5">
+                                  {v.description}
+                                </p>
                               </div>
                               {v.defaultValue && (
                                 <span className="text-[11px] font-mono text-slate-500 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
@@ -843,54 +1046,72 @@ export default function App() {
                                     <input
                                       type="radio"
                                       name={`action_${v.key}`}
-                                      checked={currentDecision?.action === 'use_existing'}
+                                      checked={
+                                        currentDecision?.action ===
+                                        "use_existing"
+                                      }
                                       onChange={() =>
                                         setVarDecisions((prev) => ({
                                           ...prev,
                                           [v.key]: {
-                                            action: 'use_existing',
-                                            vaultCredentialId: v.matchingVaultCredentialId,
+                                            action: "use_existing",
+                                            vaultCredentialId:
+                                              v.matchingVaultCredentialId,
                                           },
                                         }))
                                       }
                                       className="text-emerald-500 focus:ring-emerald-500"
                                     />
-                                    <span className="text-slate-300">Use Existing Vault Credential</span>
+                                    <span className="text-slate-300">
+                                      Use Existing Vault Credential
+                                    </span>
                                   </label>
 
                                   <label className="flex items-center space-x-1.5 cursor-pointer">
                                     <input
                                       type="radio"
                                       name={`action_${v.key}`}
-                                      checked={currentDecision?.action === 'create_new'}
+                                      checked={
+                                        currentDecision?.action === "create_new"
+                                      }
                                       onChange={() =>
                                         setVarDecisions((prev) => ({
                                           ...prev,
                                           [v.key]: {
-                                            action: 'create_new',
-                                            newValue: currentDecision?.newValue ?? v.defaultValue ?? '',
+                                            action: "create_new",
+                                            newValue:
+                                              currentDecision?.newValue ??
+                                              v.defaultValue ??
+                                              "",
                                             description: `Key for ${planResult.plan.projectName}`,
                                           },
                                         }))
                                       }
                                       className="text-emerald-500 focus:ring-emerald-500"
                                     />
-                                    <span className="text-slate-300">Enter Value</span>
+                                    <span className="text-slate-300">
+                                      Enter Value
+                                    </span>
                                   </label>
                                 </div>
                               )}
 
-                              {(!v.matchingVaultCredentialId || currentDecision?.action === 'create_new') && (
+                              {(!v.matchingVaultCredentialId ||
+                                currentDecision?.action === "create_new") && (
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
                                   <input
                                     type="text"
-                                    placeholder={v.defaultValue ? `Value (default: ${v.defaultValue})` : `Enter value for ${v.key}`}
-                                    value={currentDecision?.newValue ?? ''}
+                                    placeholder={
+                                      v.defaultValue
+                                        ? `Value (default: ${v.defaultValue})`
+                                        : `Enter value for ${v.key}`
+                                    }
+                                    value={currentDecision?.newValue ?? ""}
                                     onChange={(e) =>
                                       setVarDecisions((prev) => ({
                                         ...prev,
                                         [v.key]: {
-                                          action: 'create_new',
+                                          action: "create_new",
                                           newValue: e.target.value,
                                           description: v.description,
                                         },
@@ -901,7 +1122,11 @@ export default function App() {
                                   <input
                                     type="text"
                                     placeholder="Label / note (optional)"
-                                    value={currentDecision?.description ?? v.description ?? ''}
+                                    value={
+                                      currentDecision?.description ??
+                                      v.description ??
+                                      ""
+                                    }
                                     onChange={(e) =>
                                       setVarDecisions((prev) => ({
                                         ...prev,
@@ -922,16 +1147,23 @@ export default function App() {
 
                       {/* User-Added Custom Variables */}
                       {customVars.map((cv) => (
-                        <div key={cv.key} className="bg-slate-950 border border-emerald-900/60 rounded-lg p-3.5">
+                        <div
+                          key={cv.key}
+                          className="bg-slate-950 border border-emerald-900/60 rounded-lg p-3.5"
+                        >
                           <div className="flex items-start justify-between mb-2">
                             <div>
                               <div className="flex items-center space-x-2">
-                                <span className="font-mono text-sm font-semibold text-emerald-400">{cv.key}</span>
+                                <span className="font-mono text-sm font-semibold text-emerald-400">
+                                  {cv.key}
+                                </span>
                                 <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 border border-emerald-800 text-emerald-400 uppercase font-bold">
                                   CUSTOM
                                 </span>
                               </div>
-                              <p className="text-xs text-slate-400 mt-0.5">{cv.description}</p>
+                              <p className="text-xs text-slate-400 mt-0.5">
+                                {cv.description}
+                              </p>
                             </div>
                             <button
                               type="button"
@@ -951,7 +1183,7 @@ export default function App() {
                                 setVarDecisions((prev) => ({
                                   ...prev,
                                   [cv.key]: {
-                                    action: 'create_new',
+                                    action: "create_new",
                                     newValue: e.target.value,
                                     description: cv.description,
                                   },
@@ -992,7 +1224,9 @@ export default function App() {
                   <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-3">
                     <div className="flex items-center space-x-2">
                       <Terminal className="h-4 w-4 text-emerald-400" />
-                      <span className="text-sm font-semibold text-white">Live Execution Stream</span>
+                      <span className="text-sm font-semibold text-white">
+                        Live Execution Stream
+                      </span>
                     </div>
                     {(deploying || autoDeploying) && (
                       <span className="flex h-2 w-2 relative">
@@ -1005,21 +1239,23 @@ export default function App() {
                   {/* Terminal Window */}
                   <div className="flex-1 bg-black/80 rounded-lg p-3 font-mono text-xs overflow-y-auto space-y-1.5 border border-slate-900">
                     {deploymentLogs.length === 0 && (
-                      <div className="text-slate-600 italic">Waiting for deployment execution...</div>
+                      <div className="text-slate-600 italic">
+                        Waiting for deployment execution...
+                      </div>
                     )}
 
                     {deploymentLogs.map((log, idx) => (
                       <div key={idx} className="leading-relaxed">
-                        <span className="text-slate-500">[{log.stage}]</span>{' '}
+                        <span className="text-slate-500">[{log.stage}]</span>{" "}
                         <span
                           className={
-                            log.level === 'error'
-                              ? 'text-red-400'
-                              : log.level === 'warn'
-                              ? 'text-amber-400'
-                              : log.level === 'success'
-                              ? 'text-emerald-400'
-                              : 'text-slate-300'
+                            log.level === "error"
+                              ? "text-red-400"
+                              : log.level === "warn"
+                                ? "text-amber-400"
+                                : log.level === "success"
+                                  ? "text-emerald-400"
+                                  : "text-slate-300"
                           }
                         >
                           {log.message}
@@ -1034,7 +1270,9 @@ export default function App() {
                     <div className="mt-3 bg-emerald-950/60 border border-emerald-800 rounded-lg p-3">
                       <div className="flex items-center justify-between">
                         <div>
-                          <span className="text-[10px] uppercase font-mono text-emerald-400 block">Service Active & Ingress Routed</span>
+                          <span className="text-[10px] uppercase font-mono text-emerald-400 block">
+                            Service Active & Ingress Routed
+                          </span>
                           <a
                             href={liveUrl}
                             target="_blank"
@@ -1063,12 +1301,14 @@ export default function App() {
         )}
 
         {/* TAB 2: PROJECTS */}
-        {activeTab === 'projects' && (
+        {activeTab === "projects" && (
           <div className="space-y-4">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-white">Active Deployed Projects</h2>
+              <h2 className="text-lg font-bold text-white">
+                Active Deployed Projects
+              </h2>
               <button
-                onClick={() => setActiveTab('deploy')}
+                onClick={() => setActiveTab("deploy")}
                 className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium px-3.5 py-2 rounded-lg flex items-center space-x-1.5"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -1081,37 +1321,53 @@ export default function App() {
                 const webhookUrl = `${window.location.origin}/api/webhooks/${p.id}`;
 
                 return (
-                  <div key={p.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 hover:border-slate-700 transition-all flex flex-col justify-between">
+                  <div
+                    key={p.id}
+                    className="bg-slate-900 border border-slate-800 rounded-xl p-5 hover:border-slate-700 transition-all flex flex-col justify-between"
+                  >
                     <div>
                       <div className="flex items-start justify-between mb-3">
                         <div>
-                          <h3 className="font-semibold text-white text-base">{p.name}</h3>
-                          <span className="text-xs font-mono text-slate-400">{p.slug}</span>
+                          <h3 className="font-semibold text-white text-base">
+                            {p.name}
+                          </h3>
+                          <span className="text-xs font-mono text-slate-400">
+                            {p.slug}
+                          </span>
                         </div>
                         <span className="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px] uppercase font-mono">
                           {p.status}
                         </span>
                       </div>
 
-                      <p className="text-xs text-slate-400 truncate mb-3">{p.repoUrl}</p>
+                      <p className="text-xs text-slate-400 truncate mb-3">
+                        {p.repoUrl}
+                      </p>
 
                       {/* Subdomain Route Link */}
                       {(() => {
                         const projRoute = routes.find(
-                          (r) => r.hostname.startsWith(p.slug) || r.hostname.includes(p.slug) || r.hostname.startsWith(p.name)
+                          (r) =>
+                            r.hostname.startsWith(p.slug) ||
+                            r.hostname.includes(p.slug) ||
+                            r.hostname.startsWith(p.name),
                         );
                         if (!projRoute) return null;
                         return (
                           <div className="bg-emerald-950/40 border border-emerald-800/60 rounded-lg p-2.5 mb-3 flex items-center justify-between">
                             <div className="truncate mr-2">
-                              <span className="text-[10px] text-emerald-400 font-mono block">Subdomain Route</span>
+                              <span className="text-[10px] text-emerald-400 font-mono block">
+                                Subdomain Route
+                              </span>
                               <a
                                 href={`http://${projRoute.hostname}`}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="text-xs font-mono text-white hover:text-emerald-300 hover:underline flex items-center space-x-1"
                               >
-                                <span className="truncate">http://{projRoute.hostname}</span>
+                                <span className="truncate">
+                                  http://{projRoute.hostname}
+                                </span>
                               </a>
                             </div>
                             <a
@@ -1142,11 +1398,17 @@ export default function App() {
                             }}
                             className="text-emerald-400 hover:text-emerald-300 font-mono text-[10px] flex items-center space-x-1"
                           >
-                            {copiedId === p.id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                            <span>{copiedId === p.id ? 'Copied' : 'Copy'}</span>
+                            {copiedId === p.id ? (
+                              <Check className="h-3 w-3" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
+                            <span>{copiedId === p.id ? "Copied" : "Copy"}</span>
                           </button>
                         </div>
-                        <div className="font-mono text-[10px] text-slate-500 truncate">{webhookUrl}</div>
+                        <div className="font-mono text-[10px] text-slate-500 truncate">
+                          {webhookUrl}
+                        </div>
                       </div>
                     </div>
 
@@ -1155,9 +1417,16 @@ export default function App() {
                       <div className="flex items-center space-x-3">
                         <button
                           onClick={async () => {
-                            if (window.confirm(`Are you sure you want to permanently delete project "${p.name}"? This will stop all Docker containers, delete volumes, routes, and database records.`)) {
+                            if (
+                              window.confirm(
+                                `Are you sure you want to permanently delete project "${p.name}"? This will stop all Docker containers, delete volumes, routes, and database records.`,
+                              )
+                            ) {
                               try {
-                                await fetch(`${API_BASE}/api/projects/${p.id}`, { method: 'DELETE' });
+                                await fetch(
+                                  `${API_BASE}/api/projects/${p.id}`,
+                                  { method: "DELETE" },
+                                );
                                 fetchData();
                               } catch (err: any) {
                                 alert(`Error deleting project: ${err.message}`);
@@ -1173,7 +1442,7 @@ export default function App() {
                         <button
                           onClick={() => {
                             setRepoUrl(p.repoUrl);
-                            setActiveTab('deploy');
+                            setActiveTab("deploy");
                           }}
                           className="text-emerald-400 hover:text-emerald-300 font-medium flex items-center space-x-1"
                         >
@@ -1190,13 +1459,16 @@ export default function App() {
         )}
 
         {/* TAB 3: CREDENTIAL VAULT */}
-        {activeTab === 'vault' && (
+        {activeTab === "vault" && (
           <div className="space-y-4">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h2 className="text-lg font-bold text-white">Reusable Credential & Variable Vault</h2>
+                <h2 className="text-lg font-bold text-white">
+                  Reusable Credential & Variable Vault
+                </h2>
                 <p className="text-xs text-slate-400">
-                  Securely stored AES-256-GCM credentials. Supports duplicate key names cleanly with descriptive human labels and scoping.
+                  Securely stored AES-256-GCM credentials. Supports duplicate
+                  key names cleanly with descriptive human labels and scoping.
                 </p>
               </div>
               <button
@@ -1214,24 +1486,36 @@ export default function App() {
                 <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800">
                   <tr>
                     <th className="px-4 py-3 font-semibold">Key Name</th>
-                    <th className="px-4 py-3 font-semibold">Description / Label</th>
+                    <th className="px-4 py-3 font-semibold">
+                      Description / Label
+                    </th>
                     <th className="px-4 py-3 font-semibold">Masked Preview</th>
                     <th className="px-4 py-3 font-semibold">Scope</th>
-                    <th className="px-4 py-3 font-semibold">Referencing Projects</th>
+                    <th className="px-4 py-3 font-semibold">
+                      Referencing Projects
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
                   {vaultCreds.map((c) => (
                     <tr key={c.id} className="hover:bg-slate-800/40">
-                      <td className="px-4 py-3 font-mono font-medium text-emerald-400">{c.keyName}</td>
-                      <td className="px-4 py-3 text-slate-300">{c.description}</td>
-                      <td className="px-4 py-3 font-mono text-slate-400">{c.maskedPreview}</td>
+                      <td className="px-4 py-3 font-mono font-medium text-emerald-400">
+                        {c.keyName}
+                      </td>
+                      <td className="px-4 py-3 text-slate-300">
+                        {c.description}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-slate-400">
+                        {c.maskedPreview}
+                      </td>
                       <td className="px-4 py-3">
                         <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-[10px] font-mono">
                           {c.scope}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-slate-400">{c.boundProjectsCount} projects</td>
+                      <td className="px-4 py-3 text-slate-400">
+                        {c.boundProjectsCount} projects
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1243,13 +1527,25 @@ export default function App() {
               <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
                 <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-md w-full p-6 space-y-4">
                   <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                    <h3 className="font-semibold text-white">Store New Credential in Vault</h3>
-                    <button onClick={() => setShowAddCred(false)} className="text-slate-400 hover:text-white">✕</button>
+                    <h3 className="font-semibold text-white">
+                      Store New Credential in Vault
+                    </h3>
+                    <button
+                      onClick={() => setShowAddCred(false)}
+                      className="text-slate-400 hover:text-white"
+                    >
+                      ✕
+                    </button>
                   </div>
 
-                  <form onSubmit={handleCreateCred} className="space-y-3 text-xs">
+                  <form
+                    onSubmit={handleCreateCred}
+                    className="space-y-3 text-xs"
+                  >
                     <div>
-                      <label className="block text-slate-400 mb-1">Key Name (e.g. OPENAI_API_KEY)</label>
+                      <label className="block text-slate-400 mb-1">
+                        Key Name (e.g. OPENAI_API_KEY)
+                      </label>
                       <input
                         type="text"
                         value={newCredKey}
@@ -1261,7 +1557,9 @@ export default function App() {
                     </div>
 
                     <div>
-                      <label className="block text-slate-400 mb-1">Description / Disambiguation Label</label>
+                      <label className="block text-slate-400 mb-1">
+                        Description / Disambiguation Label
+                      </label>
                       <input
                         type="text"
                         value={newCredDesc}
@@ -1273,7 +1571,9 @@ export default function App() {
                     </div>
 
                     <div>
-                      <label className="block text-slate-400 mb-1">Plaintext Secret Value</label>
+                      <label className="block text-slate-400 mb-1">
+                        Plaintext Secret Value
+                      </label>
                       <input
                         type="password"
                         value={newCredValue}
@@ -1291,7 +1591,9 @@ export default function App() {
                         onChange={(e) => setNewCredScope(e.target.value as any)}
                         className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-slate-100"
                       >
-                        <option value="GLOBAL">GLOBAL (Available to any project)</option>
+                        <option value="GLOBAL">
+                          GLOBAL (Available to any project)
+                        </option>
                         <option value="PROJECT_SCOPED">PROJECT_SCOPED</option>
                       </select>
                     </div>
@@ -1319,37 +1621,322 @@ export default function App() {
         )}
 
         {/* TAB 4: PROXY & INGRESS */}
-        {activeTab === 'proxy' && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between mb-4">
+        {activeTab === "proxy" && (
+          <div className="space-y-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
               <div>
-                <h2 className="text-lg font-bold text-white">Reverse Proxy Ingress & Routing</h2>
+                <h2 className="text-lg font-bold text-white flex items-center space-x-2">
+                  <span>Reverse Proxy Ingress & Domain Routing</span>
+                </h2>
                 <p className="text-xs text-slate-400">
-                  Active zero-downtime routes in {systemStatus?.proxy.provider.toUpperCase() || 'CADDY'} with automatic SSL/TLS termination.
+                  Single-entry Port 80 ingress in{" "}
+                  {systemStatus?.proxy.provider.toUpperCase() || "CADDY"} with
+                  automatic route dispatching.
                 </p>
+              </div>
+
+              <button
+                onClick={() => setShowDnsGuide(!showDnsGuide)}
+                className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 font-medium transition border border-slate-700"
+              >
+                <HelpCircle className="h-3.5 w-3.5 text-emerald-400" />
+                <span>
+                  {showDnsGuide ? "Hide DNS Guide" : "DNS Setup Guide"}
+                </span>
+              </button>
+            </div>
+
+            {/* DOMAIN STRATEGY & CONFIGURATION CARD */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+                <div>
+                  <h3 className="text-sm font-semibold text-white flex items-center space-x-2">
+                    <Globe className="h-4 w-4 text-emerald-400" />
+                    <span>Base Domain Strategy</span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Controls what top-level domain or subdomain is used to
+                    generate autonomous app routes (e.g.{" "}
+                    <span className="font-mono text-emerald-400">
+                      recordly.{baseDomain}
+                    </span>
+                    ).
+                  </p>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <span className="text-[11px] text-slate-400">
+                    Active Domain:
+                  </span>
+                  <span className="px-2.5 py-1 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 font-mono text-xs font-semibold">
+                    {baseDomain}
+                  </span>
+                </div>
+              </div>
+
+              {/* DOMAIN INPUT FORM */}
+              <form
+                onSubmit={handleSaveDomain}
+                className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
+              >
+                <div className="flex-1 relative">
+                  <input
+                    type="text"
+                    value={domainInput}
+                    onChange={(e) => setDomainInput(e.target.value)}
+                    placeholder="e.g. vps.testexample.com or testexample.com"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3.5 py-2 text-xs text-white placeholder-slate-500 font-mono focus:outline-none focus:border-emerald-500 transition"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isSavingDomain || domainInput.trim() === baseDomain}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg shadow-sm transition flex items-center justify-center space-x-1.5"
+                >
+                  {isSavingDomain ? (
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Check className="h-3.5 w-3.5" />
+                  )}
+                  <span>Save & Apply Base Domain</span>
+                </button>
+              </form>
+
+              {domainSaveStatus && (
+                <div className="text-xs text-emerald-400 font-medium bg-emerald-950/60 border border-emerald-800/80 rounded-lg p-2.5 flex items-center space-x-2">
+                  <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+                  <span>{domainSaveStatus}</span>
+                </div>
+              )}
+
+              {/* LIVE TEMPLATE PREVIEW */}
+              <div className="bg-slate-950/70 border border-slate-800/80 rounded-lg p-3 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center space-x-2 text-slate-400">
+                  <span className="text-[11px] font-semibold text-slate-300">
+                    Generated URL Pattern:
+                  </span>
+                  <code className="text-emerald-400 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-900 font-mono">
+                    http://&lt;app-slug&gt;.{baseDomain}
+                  </code>
+                </div>
+                <div className="flex items-center space-x-2 text-slate-400">
+                  <span className="text-[11px] font-semibold text-slate-300">
+                    Control Plane Dashboard:
+                  </span>
+                  <a
+                    href={`http://${baseDomain}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-cyan-400 hover:underline font-mono inline-flex items-center space-x-1"
+                  >
+                    <span>http://{baseDomain}</span>
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
               </div>
             </div>
 
+            {/* DNS GUIDANCE PANEL */}
+            {showDnsGuide && (
+              <div className="bg-slate-900 border border-emerald-900/40 rounded-xl p-5 space-y-4 animate-in fade-in duration-200">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2 text-emerald-400">
+                    <Info className="h-4 w-4" />
+                    <h3 className="text-sm font-semibold text-white">
+                      DNS Records Configuration
+                    </h3>
+                  </div>
+
+                  {/* SCENARIO TOGGLE */}
+                  <div className="inline-flex rounded-lg bg-slate-950 p-1 border border-slate-800 text-xs">
+                    <button
+                      onClick={() => setDnsScenario("scenarioB")}
+                      className={`px-3 py-1 rounded-md transition font-medium ${
+                        dnsScenario === "scenarioB"
+                          ? "bg-emerald-600 text-white shadow"
+                          : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      Scenario B: Subdomain Delegation (Existing Site)
+                    </button>
+                    <button
+                      onClick={() => setDnsScenario("scenarioA")}
+                      className={`px-3 py-1 rounded-md transition font-medium ${
+                        dnsScenario === "scenarioA"
+                          ? "bg-emerald-600 text-white shadow"
+                          : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      Scenario A: Dedicated Root Domain
+                    </button>
+                  </div>
+                </div>
+
+                {dnsScenario === "scenarioB" ? (
+                  <div className="space-y-3">
+                    <p className="text-xs text-slate-300">
+                      Use this if you already have an existing website on your
+                      root domain (e.g.{" "}
+                      <span className="font-mono text-emerald-400">
+                        testexample.com
+                      </span>
+                      ). Your existing website remains{" "}
+                      <strong>completely untouched</strong>. Add these two
+                      records in GoDaddy:
+                    </p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs bg-slate-950 border border-slate-800 rounded-lg">
+                        <thead className="text-slate-400 border-b border-slate-800">
+                          <tr>
+                            <th className="px-3 py-2 font-semibold">Type</th>
+                            <th className="px-3 py-2 font-semibold">
+                              Name / Host
+                            </th>
+                            <th className="px-3 py-2 font-semibold">
+                              Points To
+                            </th>
+                            <th className="px-3 py-2 font-semibold">Purpose</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800 font-mono">
+                          <tr>
+                            <td className="px-3 py-2 text-amber-400 font-bold">
+                              A
+                            </td>
+                            <td className="px-3 py-2 text-emerald-400 font-bold">
+                              vps
+                            </td>
+                            <td className="px-3 py-2 text-slate-300">
+                              &lt;YOUR_VPS_PUBLIC_IP&gt;
+                            </td>
+                            <td className="px-3 py-2 text-slate-400 font-sans">
+                              Points vps.testexample.com to VPS (Control Plane)
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="px-3 py-2 text-amber-400 font-bold">
+                              A
+                            </td>
+                            <td className="px-3 py-2 text-emerald-400 font-bold">
+                              *.vps
+                            </td>
+                            <td className="px-3 py-2 text-slate-300">
+                              &lt;YOUR_VPS_PUBLIC_IP&gt;
+                            </td>
+                            <td className="px-3 py-2 text-slate-400 font-sans">
+                              Nested wildcard: points all *.vps.testexample.com
+                              to VPS
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-xs text-slate-300">
+                      Use this if you want the entire domain (e.g.{" "}
+                      <span className="font-mono text-emerald-400">
+                        testexample.com
+                      </span>
+                      ) dedicated to this VPS:
+                    </p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs bg-slate-950 border border-slate-800 rounded-lg">
+                        <thead className="text-slate-400 border-b border-slate-800">
+                          <tr>
+                            <th className="px-3 py-2 font-semibold">Type</th>
+                            <th className="px-3 py-2 font-semibold">
+                              Name / Host
+                            </th>
+                            <th className="px-3 py-2 font-semibold">
+                              Points To
+                            </th>
+                            <th className="px-3 py-2 font-semibold">Purpose</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800 font-mono">
+                          <tr>
+                            <td className="px-3 py-2 text-amber-400 font-bold">
+                              A
+                            </td>
+                            <td className="px-3 py-2 text-emerald-400 font-bold">
+                              @
+                            </td>
+                            <td className="px-3 py-2 text-slate-300">
+                              &lt;YOUR_VPS_PUBLIC_IP&gt;
+                            </td>
+                            <td className="px-3 py-2 text-slate-400 font-sans">
+                              Points root domain (testexample.com) to VPS
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="px-3 py-2 text-amber-400 font-bold">
+                              A
+                            </td>
+                            <td className="px-3 py-2 text-emerald-400 font-bold">
+                              *
+                            </td>
+                            <td className="px-3 py-2 text-slate-300">
+                              &lt;YOUR_VPS_PUBLIC_IP&gt;
+                            </td>
+                            <td className="px-3 py-2 text-slate-400 font-sans">
+                              Wildcard: points all subdomains
+                              (*.testexample.com) to VPS
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ACTIVE INGRESS ROUTES TABLE */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+              <div className="px-4 py-3 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-200">
+                  Active Deployed Routes ({routes.length})
+                </span>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  Port 80 Ingress
+                </span>
+              </div>
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800">
+                <thead className="bg-slate-950/40 text-slate-400 border-b border-slate-800">
                   <tr>
-                    <th className="px-4 py-3 font-semibold">Subdomain / Hostname</th>
-                    <th className="px-4 py-3 font-semibold">Internal Upstream</th>
+                    <th className="px-4 py-3 font-semibold">
+                      Subdomain / Hostname
+                    </th>
+                    <th className="px-4 py-3 font-semibold">
+                      Internal Upstream
+                    </th>
                     <th className="px-4 py-3 font-semibold">Proxy Engine</th>
-                    <th className="px-4 py-3 font-semibold">SSL Status</th>
+                    <th className="px-4 py-3 font-semibold">Status</th>
+                    <th className="px-4 py-3 font-semibold text-right">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
                   {routes.length === 0 ? (
                     <tr>
-                      <td colSpan={4} className="px-4 py-6 text-center text-slate-500">
-                        No active reverse proxy routes yet. Deploy a project to generate subdomains.
+                      <td
+                        colSpan={5}
+                        className="px-4 py-6 text-center text-slate-500"
+                      >
+                        No active reverse proxy routes yet. Deploy a project to
+                        generate subdomains.
                       </td>
                     </tr>
                   ) : (
                     routes.map((r) => (
-                      <tr key={r.routeId} className="hover:bg-slate-800/40">
+                      <tr
+                        key={r.routeId}
+                        className="hover:bg-slate-800/40 transition"
+                      >
                         <td className="px-4 py-3 font-mono font-medium text-emerald-400">
                           <a
                             href={`http://${r.hostname}`}
@@ -1361,12 +1948,25 @@ export default function App() {
                             <ExternalLink className="h-3 w-3 text-emerald-500" />
                           </a>
                         </td>
-                        <td className="px-4 py-3 font-mono text-slate-300">{r.targetUpstream}</td>
-                        <td className="px-4 py-3 uppercase text-slate-400">{r.provider}</td>
+                        <td className="px-4 py-3 font-mono text-slate-300">
+                          {r.targetUpstream}
+                        </td>
+                        <td className="px-4 py-3 uppercase text-slate-400">
+                          {r.provider}
+                        </td>
                         <td className="px-4 py-3">
                           <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px]">
-                            ONLINE (Port 80 / 443)
+                            ONLINE (Port 80)
                           </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => handleDeleteRoute(r.routeId)}
+                            className="p-1 rounded text-slate-500 hover:text-red-400 hover:bg-red-950/40 transition"
+                            title="Remove proxy route"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
                         </td>
                       </tr>
                     ))
@@ -1378,13 +1978,16 @@ export default function App() {
         )}
 
         {/* TAB 5: AUTOMATED BACKUPS */}
-        {activeTab === 'backups' && (
+        {activeTab === "backups" && (
           <div className="space-y-4">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h2 className="text-lg font-bold text-white">Automated Database Backups</h2>
+                <h2 className="text-lg font-bold text-white">
+                  Automated Database Backups
+                </h2>
                 <p className="text-xs text-slate-400">
-                  Daily automated snapshots of shared PostgreSQL tenant databases and SQLite state with automatic 7-day retention.
+                  Daily automated snapshots of shared PostgreSQL tenant
+                  databases and SQLite state with automatic 7-day retention.
                 </p>
               </div>
               <button
@@ -1419,17 +2022,29 @@ export default function App() {
                 <tbody className="divide-y divide-slate-800">
                   {backups.length === 0 ? (
                     <tr>
-                      <td colSpan={4} className="px-4 py-6 text-center text-slate-500">
-                        No backup archives generated yet. Click "Backup Now" to create an instant snapshot.
+                      <td
+                        colSpan={4}
+                        className="px-4 py-6 text-center text-slate-500"
+                      >
+                        No backup archives generated yet. Click "Backup Now" to
+                        create an instant snapshot.
                       </td>
                     </tr>
                   ) : (
                     backups.map((b) => (
                       <tr key={b.id} className="hover:bg-slate-800/40">
-                        <td className="px-4 py-3 font-mono font-medium text-emerald-400">{b.name}</td>
-                        <td className="px-4 py-3 uppercase text-slate-300">{b.type}</td>
-                        <td className="px-4 py-3 text-slate-400 font-mono">{(b.sizeBytes / 1024).toFixed(1)} KB</td>
-                        <td className="px-4 py-3 text-slate-400">{new Date(b.createdAt).toLocaleString()}</td>
+                        <td className="px-4 py-3 font-mono font-medium text-emerald-400">
+                          {b.name}
+                        </td>
+                        <td className="px-4 py-3 uppercase text-slate-300">
+                          {b.type}
+                        </td>
+                        <td className="px-4 py-3 text-slate-400 font-mono">
+                          {(b.sizeBytes / 1024).toFixed(1)} KB
+                        </td>
+                        <td className="px-4 py-3 text-slate-400">
+                          {new Date(b.createdAt).toLocaleString()}
+                        </td>
                       </tr>
                     ))
                   )}

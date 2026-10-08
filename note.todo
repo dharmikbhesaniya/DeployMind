@@ -10,5 +10,10 @@ handle the docake valuem and also handle the docker network so each other servic
 
 and one more the give project delete button if user want to delete then they can delete entierly all thing vvaluem db data logs cash all thing appplication replated and ask user data also want to delete from the data base and delete all the thing proparly
 
+also make sure one thing if need to download any tool applcaiton as dependency then also ask to user want to downloand and what is the use of that dependency explain proparly also give auto full acces or ask mode so if user set auto then don't ask just install 
 
-in this you didn't used jev by typesafe for decizon mkaing and eveluation
+
+
+
+
+make sure all thing deploye test mange by ai not the applicaiton prebuild funcation coz we don;t know the which applcaition how work user can add any kind of applciaiton in this repo to deploye so make sure this thing proparly like which command execut how to manage all those deployment relted stuff togel on and off handle by applciaotn coz on that don't need disigan this are the statik tasks

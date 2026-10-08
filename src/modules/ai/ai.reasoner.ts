@@ -1,6 +1,7 @@
 import { config } from '../../config/index.js';
 import type { RepoManifestSnapshot } from '../analyzer/repo.analyzer.js';
 import { vaultService } from '../vault/vault.service.js';
+import { settingsService } from '../settings/settings.service.js';
 import type { DeploymentPlan, DetectedVariable } from '../../core/types.js';
 
 export class AIReasoner {
@@ -100,7 +101,7 @@ export class AIReasoner {
         detectedPort: port,
         detectedMigrationCommand: manifest.readmeAnalysis?.detectedMigrationCommand,
       },
-      suggestedSubdomain: `${slug}.${config.proxy.baseDomain}`,
+      suggestedSubdomain: `${slug}.${await settingsService.getBaseDomain()}`,
       volumes: [],
       securityRisks: [],
     };
@@ -182,7 +183,7 @@ Synthesize the final deployment plan. Return ONLY JSON conforming to:
         detectedPort: parsed.exposedPort || manifest.detectedPorts[0] || 3000,
         detectedMigrationCommand: parsed.migrationCommand,
       },
-      suggestedSubdomain: `${slug}.${config.proxy.baseDomain}`,
+      suggestedSubdomain: `${slug}.${await settingsService.getBaseDomain()}`,
       volumes: [],
       securityRisks: [],
     };
