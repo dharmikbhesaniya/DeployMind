@@ -107,3 +107,9 @@ export const resourceTenants = sqliteTable('resource_tenants', {
   encryptedCredentials: text('encrypted_credentials').notNull(),
   createdAt: integer('created_at').notNull(),
 });
+
+export const systemSettings = sqliteTable('system_settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});

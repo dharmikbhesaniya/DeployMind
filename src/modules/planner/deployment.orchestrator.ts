@@ -354,13 +354,17 @@ export class DeploymentOrchestrator {
     }
 
     if (!deployedWithDocker) {
+      // Allocate isolated, conflict-free port (never 3000 or 5173)
+      const freeHostPort = await dockerService.findAvailablePort(4000);
+      activePort = freeHostPort;
+
       // PRIORITY 2: NATIVE HOST RUNNER IN STRICT PRODUCTION MODE
       eventBus.emitLog({
         deploymentId: params.deploymentId,
         timestamp: Date.now(),
         level: 'warn',
         stage: 'deploy',
-        message: `[Runtime Priority 2: Native Host Fallback] Executing cloned repository directly on host in STRICT PRODUCTION MODE (optimizing storage, CPU & RAM)...`,
+        message: `[Runtime Priority 2: Native Host Fallback] Executing cloned repository directly on host in STRICT PRODUCTION MODE (port: ${activePort})...`,
       });
 
       const procInfo = await nativeRunner.startProductionApp({
@@ -368,13 +372,13 @@ export class DeploymentOrchestrator {
         projectId,
         sourceDir,
         env: resolvedEnv,
-        port: plan.exposedPort,
+        port: activePort,
         runtime: plan.runtime,
         buildCommand: plan.readmeSummary?.detectedBuildCommand || plan.migrationCommand,
         startCommand: plan.readmeSummary?.detectedStartCommand || plan.entrypointCommand,
       });
       containerId = `pid_${procInfo.pid}`;
-      targetUpstream = `127.0.0.1:${plan.exposedPort}`;
+      targetUpstream = `127.0.0.1:${activePort}`;
     }
 
     // Record Service
@@ -421,7 +425,7 @@ export class DeploymentOrchestrator {
 
     if (!healthResult.healthy) {
       // Trigger Autonomous Diagnostic Healer
-      await diagnosticHealer.diagnoseAndRemediate({
+      const remediation = await diagnosticHealer.diagnoseAndRemediate({
         deploymentId: params.deploymentId,
         projectId,
         serviceId,
@@ -430,6 +434,26 @@ export class DeploymentOrchestrator {
         configuredPort: activePort,
         migrationCommand: plan.migrationCommand,
       });
+
+      if (!remediation.success) {
+        await db
+          .update(schema.deployments)
+          .set({ status: 'failed', updatedAt: Date.now() })
+          .where(eq(schema.deployments.id, params.deploymentId));
+
+        eventBus.emitLog({
+          deploymentId: params.deploymentId,
+          timestamp: Date.now(),
+          level: 'error',
+          stage: 'deploy',
+          message: `Deployment health check failed on port ${activePort}. Application is not responding: ${healthResult.error || 'Check process logs'}`,
+        });
+
+        return {
+          status: 'failed',
+          error: healthResult.error || 'Health check failed',
+        };
+      }
     }
 
     // Mark deployment as healthy

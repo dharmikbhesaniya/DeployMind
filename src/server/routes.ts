@@ -10,6 +10,7 @@ import { webhookService } from '../modules/webhooks/webhook.service.js';
 import { eventBus } from '../core/events.js';
 
 import { aiChatService } from '../modules/ai/chat.service.js';
+import { settingsService } from '../modules/settings/settings.service.js';
 
 export async function registerRoutes(app: FastifyInstance) {
   // System status check
@@ -30,6 +31,19 @@ export async function registerRoutes(app: FastifyInstance) {
     };
   });
 
+  // System Settings (Access mode ASK vs AUTO)
+  app.get('/api/system/settings', async () => {
+    return settingsService.getAllSettings();
+  });
+
+  app.post('/api/system/settings', async (req, reply) => {
+    const body = req.body as { accessMode?: 'ASK' | 'AUTO' };
+    if (body?.accessMode) {
+      await settingsService.setAccessMode(body.accessMode);
+    }
+    return settingsService.getAllSettings();
+  });
+
   // Interactive AI Agent Chat (TypeSafe Jev + ChatGPT)
   app.post('/api/ai/chat', async (req, reply) => {
     const body = req.body as { message: string; history?: any[] };
@@ -45,15 +59,23 @@ export async function registerRoutes(app: FastifyInstance) {
     }
   });
 
-  // Interactive Claude Code Confirmation (Approve / Deny)
+  // Interactive Claude Code Confirmation (Approve / Deny + Variables + Auto Mode)
   app.post('/api/ai/chat/confirm', async (req, reply) => {
-    const body = req.body as { promptId: string; approved: boolean };
+    const body = req.body as {
+      promptId: string;
+      approved: boolean;
+      variables?: Record<string, string>;
+      enableAutoMode?: boolean;
+    };
     if (!body?.promptId) {
       return reply.status(400).send({ error: 'promptId is required' });
     }
 
     try {
-      const result = await aiChatService.handleConfirmation(body.promptId, Boolean(body.approved));
+      const result = await aiChatService.handleConfirmation(body.promptId, Boolean(body.approved), {
+        variables: body.variables,
+        enableAutoMode: body.enableAutoMode,
+      });
       return result;
     } catch (err: any) {
       return reply.status(500).send({ error: err.message || 'Confirmation handling error' });

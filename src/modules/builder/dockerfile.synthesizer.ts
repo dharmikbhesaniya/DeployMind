@@ -31,12 +31,11 @@ ENV CSC_IDENTITY_AUTO_DISCOVERY=false
 ENV CODE_SIGN_IDENTITY="-"
 ENV CODE_SIGNING_REQUIRED="NO"
 ENV CODE_SIGNING_ALLOWED="NO"
-COPY package*.json pnpm-lock.yaml* yarn.lock* ./
-RUN if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install; \\
-    elif [ -f yarn.lock ]; then yarn install; \\
+COPY . .
+RUN if [ -f pnpm-lock.yaml ]; then corepack enable && (pnpm install --frozen-lockfile || pnpm install); \\
+    elif [ -f yarn.lock ]; then yarn install --frozen-lockfile || yarn install; \\
     elif [ -f package-lock.json ]; then npm ci || npm install; \\
     else npm install; fi
-COPY . .
 RUN if npm run | grep -q "build"; then npm run build || true; fi
 
 FROM node:22-bookworm-slim AS runner
@@ -47,7 +46,7 @@ ENV CI=true
 ENV CSC_IDENTITY_AUTO_DISCOVERY=false
 COPY --from=builder /app ./
 EXPOSE ${port}
-CMD ["sh", "-c", "if [ -f dist/index.html ]; then npx -y serve -s dist -l \${PORT}; elif [ -f build/index.html ]; then npx -y serve -s build -l \${PORT}; elif npm run | grep -q 'start'; then npm start; elif npm run | grep -q 'preview'; then npm run preview -- --host 0.0.0.0 --port \${PORT}; elif npm run | grep -q 'dev'; then npm run dev -- --host 0.0.0.0 --port \${PORT}; else node index.js; fi"]
+CMD ["sh", "-c", "if [ -f dist/index.html ]; then npx -y serve -s dist -l \${PORT} -p \${PORT}; elif [ -f build/index.html ]; then npx -y serve -s build -l \${PORT} -p \${PORT}; elif npm run | grep -q 'start'; then npm start; elif npm run | grep -q 'preview'; then npm run preview -- --host 0.0.0.0 --port \${PORT}; elif npm run | grep -q 'dev'; then npm run dev -- --host 0.0.0.0 --port \${PORT}; else node index.js; fi"]
 `;
   }
 

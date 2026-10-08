@@ -16,6 +16,7 @@ export type JevIntentChoice =
   | 'DELETE_PROJECT'
   | 'SYSTEM_STATUS'
   | 'CONFIGURE_ENV'
+  | 'SET_MODE'
   | 'CHAT';
 
 export interface JevIntentDecision {
@@ -28,6 +29,7 @@ export interface JevIntentDecision {
     envKey?: string;
     envValue?: string;
     targetId?: string;
+    mode?: 'ASK' | 'AUTO';
   };
   riskLevel: 'SAFE' | 'CAUTION' | 'DESTRUCTIVE';
   requiresPermission: boolean;
@@ -251,9 +253,26 @@ export class JevEvaluator {
       };
     }
 
+    // Check for Mode Configuration (AUTO full access vs ASK mode)
+    if (
+      /\b(auto|ask)\s*mode\b/i.test(lower) ||
+      /\b(set|switch|change|toggle|enable)\b.*\b(mode|access|permission)\b/i.test(lower) ||
+      /\b(full access|auto deploy|ask before|ask permission)\b/i.test(lower)
+    ) {
+      const mode = /\b(auto|full|unrestricted)\b/i.test(lower) ? 'AUTO' : 'ASK';
+      return {
+        choice: 'SET_MODE',
+        confidence: 0.98,
+        entities: { mode },
+        riskLevel: 'SAFE',
+        requiresPermission: false,
+        evaluationFactors: ['Runtime access permission configuration'],
+      };
+    }
+
     // Check for Environment Variable Configuration
     const envMatch = message.match(/(?:set|add|var|variable|env|config)\s+([A-Z0-9_]+)\s*(?:=|to|\s+)\s*([^\s]+)/i);
-    if (envMatch) {
+    if (envMatch && !/^(mode|access)$/i.test(envMatch[1])) {
       return {
         choice: 'CONFIGURE_ENV',
         confidence: 0.96,

@@ -20,7 +20,12 @@ import {
   AlertCircle,
   Loader2,
   Play,
-  Globe
+  Globe,
+  Key,
+  Download,
+  Cpu,
+  Sliders,
+  Zap
 } from 'lucide-react';
 
 export interface ChatMessage {
@@ -43,6 +48,21 @@ export interface ChatMessage {
     details: string;
     riskLevel: 'SAFE' | 'CAUTION' | 'DESTRUCTIVE';
     confidence: number;
+    deploymentId?: string;
+    projectId?: string;
+    repoUrl?: string;
+    missingVariables?: Array<{
+      key: string;
+      description: string;
+      defaultValue?: string;
+      type: string;
+    }>;
+    requiredTools?: Array<{
+      name: string;
+      purpose: string;
+      commandOrPackage: string;
+    }>;
+    accessMode?: 'ASK' | 'AUTO';
   };
   actionResult?: {
     action: string;
@@ -310,6 +330,211 @@ const LiveDeploymentStreamer: React.FC<{
   );
 };
 
+// Sub-component: Claude Code Interactive Permission & Variable Configuration Card
+const InteractiveConfigCard: React.FC<{
+  prompt: ChatMessage['interactivePrompt'];
+  messageId: string;
+  onConfirm: (
+    promptId: string,
+    approved: boolean,
+    messageId: string,
+    variables?: Record<string, string>,
+    enableAutoMode?: boolean
+  ) => void;
+  loading: boolean;
+}> = ({ prompt, messageId, onConfirm, loading }) => {
+  if (!prompt) return null;
+
+  // 1. Destructive permission guardrail card (DELETE_PROJECT, etc.)
+  if (prompt.type === 'permission_request') {
+    return (
+      <div className="mt-3.5 bg-red-950/40 border border-red-800/80 rounded-lg p-3 space-y-2.5">
+        <div className="flex items-start space-x-2">
+          <ShieldAlert className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+          <div>
+            <h4 className="font-semibold text-red-200 text-xs">{prompt.title}</h4>
+            <p className="text-[11px] text-red-300/90 mt-0.5">{prompt.details}</p>
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-2 pt-1 border-t border-red-900/60">
+          <button
+            onClick={() => onConfirm(prompt.id, true, messageId)}
+            disabled={loading}
+            className="bg-red-600 hover:bg-red-500 text-white font-medium px-3 py-1.5 rounded text-[11px] flex items-center space-x-1 transition"
+          >
+            <CheckCircle className="h-3.5 w-3.5" />
+            <span>Approve & Execute</span>
+          </button>
+          <button
+            onClick={() => onConfirm(prompt.id, false, messageId)}
+            disabled={loading}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium px-3 py-1.5 rounded text-[11px] flex items-center space-x-1 border border-slate-700 transition"
+          >
+            <XCircle className="h-3.5 w-3.5" />
+            <span>Cancel Action</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Pre-deployment variable configuration and tool approval card
+  const [variables, setVariables] = useState<Record<string, string>>(() => {
+    const initial: Record<string, string> = {};
+    prompt.missingVariables?.forEach((v) => {
+      initial[v.key] = v.defaultValue || '';
+    });
+    return initial;
+  });
+
+  const [enableAuto, setEnableAuto] = useState<boolean>(false);
+
+  const handleInputChange = (key: string, val: string) => {
+    setVariables((prev) => ({ ...prev, [key]: val }));
+  };
+
+  const handleApprove = () => {
+    onConfirm(prompt.id, true, messageId, variables, enableAuto);
+  };
+
+  const handleCancel = () => {
+    onConfirm(prompt.id, false, messageId);
+  };
+
+  return (
+    <div className="mt-3.5 bg-slate-900/95 border border-emerald-700/80 rounded-xl p-4 space-y-4 shadow-2xl">
+      <div className="flex items-start justify-between border-b border-slate-800 pb-3">
+        <div className="flex items-start space-x-2.5">
+          <div className="p-1.5 bg-emerald-950 rounded-lg border border-emerald-600/60 text-emerald-400">
+            <Sliders className="h-4 w-4" />
+          </div>
+          <div>
+            <h4 className="font-semibold text-white text-xs flex items-center space-x-2">
+              <span>{prompt.title}</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-950 text-amber-300 border border-amber-800 font-semibold">
+                Action Required
+              </span>
+            </h4>
+            <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">{prompt.details}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Missing Required Keys Section */}
+      {prompt.missingVariables && prompt.missingVariables.length > 0 && (
+        <div className="space-y-2.5">
+          <div className="flex items-center space-x-1.5 text-xs font-semibold text-emerald-400">
+            <Key className="h-3.5 w-3.5" />
+            <span>Required Environment Keys & Configuration ({prompt.missingVariables.length})</span>
+          </div>
+          <p className="text-[11px] text-slate-400">
+            These dependencies are required for the project to operate properly. Values entered will be securely saved into the Vault:
+          </p>
+          <div className="space-y-2">
+            {prompt.missingVariables.map((v) => (
+              <div key={v.key} className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs text-emerald-300 font-bold">{v.key}</span>
+                  <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                    {v.type === 'EXTERNAL_REQUIRED' ? 'Required' : 'Configurable'}
+                  </span>
+                </div>
+                {v.description && (
+                  <p className="text-[10px] text-slate-400 italic">{v.description}</p>
+                )}
+                <input
+                  type="text"
+                  value={variables[v.key] ?? ''}
+                  onChange={(e) => handleInputChange(v.key, e.target.value)}
+                  placeholder={`Enter value for ${v.key}...`}
+                  className="w-full bg-slate-900 border border-slate-700 focus:border-emerald-500 rounded px-2.5 py-1.5 text-xs text-white font-mono placeholder:text-slate-600 outline-none transition"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Tool Dependencies to Download Section */}
+      {prompt.requiredTools && prompt.requiredTools.length > 0 && (
+        <div className="space-y-2.5 pt-2 border-t border-slate-800/80">
+          <div className="flex items-center space-x-1.5 text-xs font-semibold text-blue-400">
+            <Download className="h-3.5 w-3.5" />
+            <span>Dependencies & Tools to Download ({prompt.requiredTools.length})</span>
+          </div>
+          <p className="text-[11px] text-slate-400">
+            DeployMind detected external tools and application dependencies needed by this project:
+          </p>
+          <div className="space-y-2">
+            {prompt.requiredTools.map((t, idx) => (
+              <div key={idx} className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 space-y-1">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Cpu className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+                    <span className="font-semibold text-xs text-slate-200">{t.name}</span>
+                  </div>
+                  <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-900 text-blue-300 border border-slate-700">
+                    {t.commandOrPackage}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 pl-5 leading-relaxed">
+                  <span className="text-slate-500 font-medium">Why needed:</span> {t.purpose}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Auto Full Access Checkbox */}
+      <div className="bg-slate-950/80 p-2.5 rounded-lg border border-slate-800 flex items-start space-x-2.5">
+        <input
+          type="checkbox"
+          id={`auto-mode-${prompt.id}`}
+          checked={enableAuto}
+          onChange={(e) => setEnableAuto(e.target.checked)}
+          className="mt-0.5 rounded border-slate-700 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+        />
+        <label htmlFor={`auto-mode-${prompt.id}`} className="text-[11px] text-slate-300 cursor-pointer select-none">
+          <span className="font-semibold text-white flex items-center space-x-1">
+            <Zap className="h-3 w-3 text-amber-400 inline" />
+            <span>Enable AUTO Mode (Full Access)</span>
+          </span>
+          <span className="text-slate-400 block mt-0.5">
+            Automatically download and install dependencies for future deployments without asking for approval.
+          </span>
+        </label>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+        <button
+          onClick={handleCancel}
+          disabled={loading}
+          className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium px-3.5 py-1.5 rounded-lg text-xs flex items-center space-x-1.5 transition border border-slate-700"
+        >
+          <XCircle className="h-3.5 w-3.5" />
+          <span>Cancel</span>
+        </button>
+
+        <button
+          onClick={handleApprove}
+          disabled={loading}
+          className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-4 py-1.5 rounded-lg text-xs flex items-center space-x-1.5 transition shadow-lg"
+        >
+          {loading ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Rocket className="h-3.5 w-3.5" />
+          )}
+          <span>Approve & Deploy</span>
+        </button>
+      </div>
+    </div>
+  );
+};
+
 export const AIChatConsole: React.FC<AIChatConsoleProps> = ({ apiBase, wsBase, onRefreshData }) => {
   // 1. Persistent Multi-Chat Sessions State from localStorage
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
@@ -520,14 +745,46 @@ export const AIChatConsole: React.FC<AIChatConsoleProps> = ({ apiBase, wsBase, o
     }
   };
 
-  // Interactive Confirmation (Approve / Deny)
-  const handleConfirmPrompt = async (promptId: string, approved: boolean, messageId: string) => {
+  const [accessMode, setAccessMode] = useState<'ASK' | 'AUTO'>('ASK');
+
+  useEffect(() => {
+    fetch(`${apiBase}/api/system/settings`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.accessMode) setAccessMode(d.accessMode);
+      })
+      .catch(() => {});
+  }, [apiBase]);
+
+  const toggleAccessMode = async () => {
+    const nextMode = accessMode === 'ASK' ? 'AUTO' : 'ASK';
+    try {
+      const res = await fetch(`${apiBase}/api/system/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessMode: nextMode }),
+      });
+      const d = await res.json();
+      if (d?.accessMode) setAccessMode(d.accessMode);
+    } catch {
+      // ignore
+    }
+  };
+
+  // Interactive Confirmation (Approve / Deny + Variables + Auto Mode)
+  const handleConfirmPrompt = async (
+    promptId: string,
+    approved: boolean,
+    messageId: string,
+    variables?: Record<string, string>,
+    enableAutoMode?: boolean
+  ) => {
     setLoading(true);
     try {
       const res = await fetch(`${apiBase}/api/ai/chat/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ promptId, approved }),
+        body: JSON.stringify({ promptId, approved, variables, enableAutoMode }),
       });
 
       const data = await res.json();
@@ -542,7 +799,8 @@ export const AIChatConsole: React.FC<AIChatConsoleProps> = ({ apiBase, wsBase, o
                   return {
                     ...m,
                     interactivePrompt: undefined,
-                    content: `${m.content}\n\n${approved ? '✅ **Action Approved & Executed**:' : '❌ **Action Denied**:'} ${data.message}`,
+                    deploymentStream: data.deploymentStream || m.deploymentStream,
+                    content: `${m.content}\n\n${approved ? '✅ **Action Approved**:' : '❌ **Action Cancelled**:'} ${data.message}`,
                   };
                 }
                 return m;
@@ -552,6 +810,10 @@ export const AIChatConsole: React.FC<AIChatConsoleProps> = ({ apiBase, wsBase, o
           return s;
         })
       );
+
+      if (enableAutoMode) {
+        setAccessMode('AUTO');
+      }
 
       if (onRefreshData) onRefreshData();
     } catch (err: any) {
@@ -645,8 +907,26 @@ export const AIChatConsole: React.FC<AIChatConsoleProps> = ({ apiBase, wsBase, o
             </div>
           </div>
 
-          {/* Quick Command Suggestions */}
+          {/* Header Actions: Mode Toggle & Quick Commands */}
           <div className="flex items-center space-x-2">
+            {/* Access Mode Toggle Badge */}
+            <button
+              onClick={toggleAccessMode}
+              className={`text-[11px] font-mono px-2.5 py-1 rounded-full border transition flex items-center space-x-1.5 shadow-sm cursor-pointer select-none ${
+                accessMode === 'AUTO'
+                  ? 'bg-amber-950/80 border-amber-600 text-amber-300 hover:bg-amber-900/80'
+                  : 'bg-emerald-950/80 border-emerald-600 text-emerald-300 hover:bg-emerald-900/80'
+              }`}
+              title="Click to toggle between ASK Mode (requires manual approval for tools) and AUTO Mode (automatic download & full access)"
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  accessMode === 'AUTO' ? 'bg-amber-400' : 'bg-emerald-400'
+                } animate-pulse`}
+              />
+              <span className="font-semibold">{accessMode === 'AUTO' ? '⚡ AUTO Mode' : '🛡️ ASK Mode'}</span>
+            </button>
+
             <button
               onClick={() => handleSendMessage('Deploy https://github.com/webadderallorg/Recordly')}
               className="text-[11px] px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-300 rounded border border-slate-700 flex items-center space-x-1 transition"
@@ -703,44 +983,14 @@ export const AIChatConsole: React.FC<AIChatConsoleProps> = ({ apiBase, wsBase, o
                   {m.content}
                 </div>
 
-                {/* Claude Code Interactive Permission Guardrail Card */}
+                {/* Claude Code Interactive Configuration & Permission Card */}
                 {m.interactivePrompt && (
-                  <div className="mt-3.5 bg-red-950/40 border border-red-800/80 rounded-lg p-3 space-y-2.5">
-                    <div className="flex items-start space-x-2">
-                      <ShieldAlert className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
-                      <div>
-                        <h4 className="font-semibold text-red-200 text-xs">
-                          {m.interactivePrompt.title}
-                        </h4>
-                        <p className="text-[11px] text-red-300/90 mt-0.5">
-                          {m.interactivePrompt.details}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center space-x-2 pt-1 border-t border-red-900/60">
-                      <button
-                        onClick={() =>
-                          handleConfirmPrompt(m.interactivePrompt!.id, true, m.id)
-                        }
-                        disabled={loading}
-                        className="bg-red-600 hover:bg-red-500 text-white font-medium px-3 py-1.5 rounded text-[11px] flex items-center space-x-1 transition"
-                      >
-                        <CheckCircle className="h-3.5 w-3.5" />
-                        <span>Approve & Execute</span>
-                      </button>
-                      <button
-                        onClick={() =>
-                          handleConfirmPrompt(m.interactivePrompt!.id, false, m.id)
-                        }
-                        disabled={loading}
-                        className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium px-3 py-1.5 rounded text-[11px] flex items-center space-x-1 border border-slate-700 transition"
-                      >
-                        <XCircle className="h-3.5 w-3.5" />
-                        <span>Cancel Action</span>
-                      </button>
-                    </div>
-                  </div>
+                  <InteractiveConfigCard
+                    prompt={m.interactivePrompt}
+                    messageId={m.id}
+                    onConfirm={handleConfirmPrompt}
+                    loading={loading}
+                  />
                 )}
 
                 {/* Real-time Streaming Deployment Widget */}

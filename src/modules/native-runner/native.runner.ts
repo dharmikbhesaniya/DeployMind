@@ -247,15 +247,18 @@ export class NativeRunner {
         });
       }
 
-      // 3. Storage optimization: Prune dev dependencies after build to save maximum VPS disk space
-      eventBus.emitLog({
-        deploymentId,
-        timestamp: Date.now(),
-        level: 'info',
-        stage: 'build',
-        message: `[Native Runner] Resource Optimization: Pruning devDependencies to conserve VPS disk storage and memory...`,
-      });
-      await this.runSubprocess(dir, 'npm', ['prune', '--production'], env).catch(() => {});
+      // 3. Storage optimization: Prune dev dependencies only if not using Vite or build tools
+      const isViteProject = fs.existsSync(path.join(dir, 'vite.config.ts')) || fs.existsSync(path.join(dir, 'vite.config.js'));
+      if (!isViteProject) {
+        eventBus.emitLog({
+          deploymentId,
+          timestamp: Date.now(),
+          level: 'info',
+          stage: 'build',
+          message: `[Native Runner] Resource Optimization: Pruning devDependencies to conserve VPS disk storage and memory...`,
+        });
+        await this.runSubprocess(dir, 'npm', ['prune', '--production'], env).catch(() => {});
+      }
     } else if (isPython) {
       if (fs.existsSync(path.join(dir, 'requirements.txt'))) {
         eventBus.emitLog({
@@ -284,6 +287,63 @@ export class NativeRunner {
     customStart?: string,
     port = 3000
   ): { command: string; args: string[] } {
+    // 1. High-reliability static server for built SPAs and web apps (Vite, React, Vue, Electron web UI)
+    if (fs.existsSync(path.join(dir, 'dist', 'index.html')) || fs.existsSync(path.join(dir, 'build', 'index.html'))) {
+      const serverScript = `
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const port = parseInt(process.env.PORT || '${port}', 10);
+const root = path.join(__dirname, fs.existsSync(path.join(__dirname, 'dist', 'index.html')) ? 'dist' : 'build');
+const mimeTypes = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.wasm': 'application/wasm',
+  '.webm': 'video/webm',
+  '.mp4': 'video/mp4',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2'
+};
+const server = http.createServer((req, res) => {
+  let reqPath = decodeURI(req.url.split('?')[0]);
+  let filePath = path.join(root, reqPath);
+  if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
+    filePath = path.join(filePath, 'index.html');
+  }
+  if (!fs.existsSync(filePath)) {
+    filePath = path.join(root, 'index.html');
+  }
+  fs.readFile(filePath, (err, content) => {
+    if (err) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not Found');
+      return;
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    res.writeHead(200, {
+      'Content-Type': mimeTypes[ext] || 'application/octet-stream',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache'
+    });
+    res.end(content);
+  });
+});
+server.listen(port, '0.0.0.0', () => {
+  console.log('[DeployMind Static Server] Serving on 0.0.0.0:' + port);
+});
+`;
+      fs.writeFileSync(path.join(dir, 'deploymind-server.cjs'), serverScript, 'utf8');
+      return { command: 'node', args: ['deploymind-server.cjs'] };
+    }
+
     if (customStart) {
       // Strictly prevent running in dev mode
       const lower = customStart.toLowerCase();
