@@ -3,6 +3,15 @@ import { createServer } from './server/index.js';
 import { config } from './config/index.js';
 import { proxyService } from './modules/proxy/proxy.service.js';
 
+// Global process protection against crashes
+process.on('unhandledRejection', (reason: any) => {
+  console.warn('[Process Safety] Unhandled promise rejection caught:', reason?.message || reason);
+});
+
+process.on('uncaughtException', (err: any) => {
+  console.error('[Process Safety] Uncaught exception caught:', err?.message || err);
+});
+
 async function bootstrap() {
   console.log('🚀 Initializing DeployMind Modular Monolith...');
   
