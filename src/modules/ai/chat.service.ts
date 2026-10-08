@@ -71,13 +71,16 @@ export class AIChatService {
     const routes = await proxyService.listAllRoutes();
 
     const systemContext = {
-      activeProjects: projects.map((p) => ({
-        id: p.id,
-        name: p.name,
-        slug: p.slug,
-        repoUrl: p.repoUrl,
-        status: p.status,
-      })),
+      activeProjects: projects.map((p) => {
+        const projService = services.find((s) => s.projectId === p.id);
+        return {
+          id: p.id,
+          name: p.name,
+          slug: p.slug,
+          repoUrl: p.repoUrl,
+          status: projService?.actualState || 'active',
+        };
+      }),
       activeServices: services.map((s) => ({
         id: s.id,
         name: s.name,

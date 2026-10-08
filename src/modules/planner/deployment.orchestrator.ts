@@ -190,7 +190,7 @@ export class DeploymentOrchestrator {
   async executeDeployment(params: {
     deploymentId: string;
     variableDecisions: VariableDecision[];
-  }): Promise<{ status: string; liveUrl: string }> {
+  }): Promise<{ status: string; liveUrl: string; error?: string }> {
     const [dep] = await db
       .select()
       .from(schema.deployments)
@@ -435,7 +435,7 @@ export class DeploymentOrchestrator {
         migrationCommand: plan.migrationCommand,
       });
 
-      if (!remediation.success) {
+      if (!remediation.remediated) {
         await db
           .update(schema.deployments)
           .set({ status: 'failed', updatedAt: Date.now() })
@@ -451,6 +451,7 @@ export class DeploymentOrchestrator {
 
         return {
           status: 'failed',
+          liveUrl: '',
           error: healthResult.error || 'Health check failed',
         };
       }
