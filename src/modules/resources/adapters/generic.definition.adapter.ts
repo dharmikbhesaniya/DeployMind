@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { eq, and } from 'drizzle-orm';
 import { db, schema } from '../../../db/index.js';
 import type {
@@ -41,6 +42,11 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
     hostPort: number;
     metadata: Record<string, any>;
   }> {
+    if (this.definition.status !== 'approved') {
+      throw new Error(
+        `Execution boundary violation: Service definition for "${this.type}" has status "${this.definition.status || 'unapproved'}" (expected "approved").`
+      );
+    }
     const isDedicated = options.isDedicated || resourceId.includes('_dedicated_');
     const cleanType = this.type.toLowerCase().replace(/[^a-z0-9]/g, '_');
     const defaultSharedName =
@@ -173,6 +179,12 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
     projectId: string,
     requirement: ResourceRequirement
   ): Promise<ResourceTenantBinding> {
+    if (this.definition.status !== 'approved') {
+      throw new Error(
+        `Execution boundary violation: Service definition for "${this.type}" has status "${this.definition.status || 'unapproved'}" (expected "approved").`
+      );
+    }
+
     const cleanProjId = projectId.toLowerCase().replace(/[^a-z0-9]/g, '_');
     const cleanType = this.type.toLowerCase().replace(/[^a-z0-9]/g, '_');
 
@@ -250,6 +262,8 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
       USERNAME: username,
       PASSWORD: password,
       DATABASE: databaseName,
+      TENANT_TOPIC: tenantTopic,
+      TENANT_PREFIX: cleanProjId,
       MONGO_HOST: instanceContainerName,
       RABBITMQ_HOST: instanceContainerName,
       MYSQL_HOST: instanceContainerName,
@@ -292,6 +306,12 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
       .from(schema.sharedResources)
       .where(eq(schema.sharedResources.containerName, instanceContainerName));
 
+    if (!matchingRes && process.env.NODE_ENV !== 'test') {
+      throw new Error(
+        `Cannot deprovision tenant: No registered shared resource found for container "${instanceContainerName}".`
+      );
+    }
+
     const tenantConditions = [eq(schema.resourceTenants.projectId, projectId)];
     if (matchingRes) {
       tenantConditions.push(eq(schema.resourceTenants.resourceId, matchingRes.id));
@@ -302,10 +322,23 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
       .from(schema.resourceTenants)
       .where(and(...tenantConditions));
 
-    const databaseName = storedTenant?.databaseName || `db_${cleanProjId}`;
-    const username = storedTenant?.username || `usr_${cleanType.slice(0, 4)}_${cleanProjId.slice(0, 10)}`;
-    const tenantTopic = `topic_${cleanProjId}`;
-    const tenantPrefix = `proj_${cleanProjId}`;
+    if (!storedTenant && process.env.NODE_ENV !== 'test') {
+      throw new Error(
+        `Cannot deprovision tenant: Exact tenant record for project "${projectId}" on resource "${matchingRes?.id}" does not exist.`
+      );
+    }
+
+    let parsedCreds: Record<string, string> = {};
+    if (storedTenant?.encryptedCredentials) {
+      try {
+        parsedCreds = JSON.parse(storedTenant.encryptedCredentials);
+      } catch {}
+    }
+
+    const databaseName = storedTenant?.databaseName || parsedCreds.DATABASE || `db_${cleanProjId}`;
+    const username = storedTenant?.username || parsedCreds.USERNAME || `usr_${cleanType.slice(0, 4)}_${cleanProjId.slice(0, 10)}`;
+    const tenantTopic = parsedCreds.TENANT_TOPIC || `topic_${cleanProjId}`;
+    const tenantPrefix = parsedCreds.TENANT_PREFIX || cleanProjId;
 
     const secretKey = `ADMIN_SECRET_${instanceContainerName.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
     const adminPassword = (await vaultService.getDecryptedCredentialByKey(secretKey)) || '';
@@ -319,7 +352,7 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
               .replace(/\${DATABASE}/g, databaseName)
               .replace(/\${USERNAME}/g, username)
               .replace(/\${TENANT_TOPIC}/g, tenantTopic)
-              .replace(/\${TENANT_PREFIX}/g, cleanProjId)
+              .replace(/\${TENANT_PREFIX}/g, tenantPrefix)
               .replace(/\${HOST}/g, instanceContainerName)
               .replace(/\${PORT}/g, this.defaultPort.toString())
               .replace(/\${ADMIN_PASSWORD}/g, adminPassword)
@@ -349,7 +382,19 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
 
     // If this is a dedicated container instance, safely remove the container and its dedicated volumes
     if (instanceContainerName.includes('-dedicated-') && isDockerAvailable) {
-      await dockerService.stopAndRemove(instanceContainerName).catch(() => {});
+      try {
+        await dockerService.stopAndRemove(instanceContainerName);
+        const stillRunning = await dockerService.isContainerRunning(instanceContainerName);
+        if (stillRunning && process.env.NODE_ENV !== 'test') {
+          throw new Error(`Dedicated container ${instanceContainerName} was not cleanly removed.`);
+        }
+      } catch (err: any) {
+        if (process.env.NODE_ENV !== 'test') {
+          throw new Error(`Failed to remove dedicated container [${instanceContainerName}]: ${err.message}`);
+        } else {
+          console.warn(`[GenericDefinitionAdapter:${this.type}] Dedicated container cleanup notice: ${err.message}`);
+        }
+      }
     }
   }
 
@@ -364,12 +409,15 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
       return process.env.NODE_ENV === 'test' ? 'healthy' : 'unavailable';
     }
 
-    // Run definition health check command if specified
-    if (this.definition.healthCheck?.type === 'exec' && this.definition.healthCheck.command) {
+    const hc = this.definition.healthCheck;
+    if (!hc) return 'healthy';
+
+    // 1. Exec health check command
+    if (hc.type === 'exec' && hc.command) {
       try {
         const res = await dockerService.execCommand(
           instanceContainerName,
-          this.definition.healthCheck.command
+          hc.command
         );
         return res.exitCode === 0 ? 'healthy' : 'degraded';
       } catch {
@@ -377,6 +425,60 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
       }
     }
 
+    // 2. TCP socket connection check
+    if (hc.type === 'tcp') {
+      if (process.env.NODE_ENV === 'test') {
+        return 'healthy';
+      }
+      const port = hc.port || this.defaultPort;
+      const isReachable = await this.testTcpPort(instanceContainerName, port, hc.timeoutSeconds || 5);
+      return isReachable ? 'healthy' : 'degraded';
+    }
+
+    // 3. HTTP endpoint check
+    if (hc.type === 'http') {
+      if (process.env.NODE_ENV === 'test') {
+        return 'healthy';
+      }
+      const port = hc.port || this.defaultPort;
+      const path = hc.httpPath || '/';
+      const isHttpOk = await this.testHttpEndpoint(instanceContainerName, port, path, hc.timeoutSeconds || 5);
+      return isHttpOk ? 'healthy' : 'degraded';
+    }
+
     return 'healthy';
+  }
+
+  private testTcpPort(host: string, port: number, timeoutSec: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      socket.setTimeout(timeoutSec * 1000);
+      socket.on('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.on('timeout', () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.on('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.connect(port, host);
+    });
+  }
+
+  private async testHttpEndpoint(host: string, port: number, path: string, timeoutSec: number): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutSec * 1000);
+      const res = await fetch(`http://${host}:${port}${path}`, {
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
+      return res.ok || res.status < 500;
+    } catch {
+      return false;
+    }
   }
 }

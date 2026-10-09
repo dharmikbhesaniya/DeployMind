@@ -4,6 +4,7 @@ import type { ResourceAdapter, ResourceCandidate } from './adapters/resource.ada
 import { GenericDefinitionAdapter } from './adapters/generic.definition.adapter.js';
 import { BUILTIN_SERVICE_DEFINITIONS } from './definitions/service.definition.catalog.js';
 import { serviceDefinitionGenerator } from './definitions/service.definition.generator.js';
+import type { ServiceDefinition } from './definitions/service.definition.types.js';
 
 export class ResourceRegistry {
   private adapters = new Map<string, ResourceAdapter>();
@@ -23,6 +24,7 @@ export class ResourceRegistry {
   constructor() {
     // Register all service definitions dynamically through GenericDefinitionAdapter
     for (const [key, def] of Object.entries(BUILTIN_SERVICE_DEFINITIONS)) {
+      def.status = 'approved';
       this.registerAdapter(new GenericDefinitionAdapter(def));
       for (const alias of def.aliases) {
         this.typeAliases.set(alias.toLowerCase(), def.serviceType.toLowerCase());
@@ -52,6 +54,19 @@ export class ResourceRegistry {
     const normalized = this.normalizeType(type);
     const existing = this.adapters.get(normalized);
     if (existing) {
+      // Check SQLite in case status transitioned (e.g. candidate -> approved / rejected / revoked)
+      const [stored] = await db
+        .select()
+        .from(schema.serviceDefinitions)
+        .where(eq(schema.serviceDefinitions.serviceType, normalized));
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored.definitionPayload) as ServiceDefinition;
+          parsed.status = (stored.status as any) || parsed.status || ((existing as any).definition?.provenance?.source === 'builtin' ? 'approved' : undefined);
+          (existing as any).definition = parsed;
+        } catch {}
+      }
+
       if ((existing as any).definition?.status === 'rejected' || (existing as any).definition?.status === 'revoked') {
         throw new Error(`Service definition for "${normalized}" has been ${(existing as any).definition.status} and cannot be executed.`);
       }

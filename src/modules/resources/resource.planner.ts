@@ -37,7 +37,7 @@ export class ResourcePlanner {
       }
     }
 
-    // Policy Check 0: Security Boundary - Reject revoked or rejected definitions
+    // Policy Check 0: Security Boundary & Approval Gate - Enforce approved status
     const [storedDef] = await db
       .select()
       .from(schema.serviceDefinitions)
@@ -51,6 +51,16 @@ export class ResourcePlanner {
           reason: `Service definition for "${requirement.type}" is ${defStatus} and forbidden from execution.`,
         },
         reasoning: `Backing service "${requirement.type}" definition has been ${defStatus} by security policy.`,
+      };
+    }
+
+    if (defStatus !== 'approved') {
+      return {
+        decision: {
+          action: 'reject',
+          reason: `Service definition for "${requirement.type}" is in "${defStatus || 'candidate'}" status and has not been approved for execution. Operator review and approval are required before provisioning or tenant binding.`,
+        },
+        reasoning: `Backing service "${requirement.type}" is unapproved (status: ${defStatus || 'candidate'}). Provisioning blocked at execution boundary.`,
       };
     }
 
@@ -121,6 +131,13 @@ export class ResourcePlanner {
 
     if (decision.action === 'reject') {
       throw new Error(`Resource provisioning rejected: ${decision.reason}`);
+    }
+
+    const execStatus = (adapter as any)?.definition?.status;
+    if (execStatus && execStatus !== 'approved') {
+      throw new Error(
+        `Resource execution boundary violation: Backing service definition for "${normalizedType}" has status "${execStatus}" (expected "approved").`
+      );
     }
 
     let resourceId: string;

@@ -751,5 +751,11 @@ export const BUILTIN_SERVICE_DEFINITIONS: Record<string, ServiceDefinition> = {
       source: 'builtin',
       generatedAt: 1728500000000,
     },
+    status: 'approved',
   },
 };
+
+// Explicitly establish trusted approved status on all built-in catalog definitions
+for (const def of Object.values(BUILTIN_SERVICE_DEFINITIONS)) {
+  def.status = 'approved';
+}

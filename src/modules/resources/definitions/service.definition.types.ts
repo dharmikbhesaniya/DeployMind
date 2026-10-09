@@ -45,6 +45,7 @@ export interface ServiceDefinition {
   category: ServiceCategory;
   version: string;
   image: string; // Official OCI image
+  imageDigest?: string; // Resolved immutable manifest digest (sha256:...)
   defaultInternalPort: number;
   environment?: Record<string, string>;
   volumes?: Array<{

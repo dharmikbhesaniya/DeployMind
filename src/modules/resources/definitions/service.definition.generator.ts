@@ -12,6 +12,20 @@ export interface GenerateDefinitionRequest {
   forceRegenerate?: boolean;
 }
 
+export function canonicalStringify(obj: any): string {
+  if (obj === null || typeof obj !== 'object') {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return '[' + obj.map((item) => canonicalStringify(item)).join(',') + ']';
+  }
+  const keys = Object.keys(obj).sort();
+  const pairs = keys
+    .filter((k) => obj[k] !== undefined)
+    .map((k) => `${JSON.stringify(k)}:${canonicalStringify(obj[k])}`);
+  return '{' + pairs.join(',') + '}';
+}
+
 export class ServiceDefinitionGenerator {
   /**
    * Researches and generates a validated ServiceDefinition for ANY technology.
@@ -74,6 +88,7 @@ export class ServiceDefinitionGenerator {
 
   /**
    * Discovers and retrieves OCI registry evidence from Docker Hub / OCI Registry
+   * Queries both repository metadata and tag endpoint to resolve genuine sha256 manifest digests.
    */
   async retrieveRegistryEvidence(serviceType: string, imageTag: string): Promise<{
     sourceUrl: string;
@@ -83,32 +98,70 @@ export class ServiceDefinitionGenerator {
     retrievedAt: number;
     rawPayloadHash: string;
   }> {
-    const isOfficial = !imageTag.includes('/');
-    const repoPath = isOfficial ? `library/${serviceType}` : imageTag.split(':')[0];
-    const sourceUrl = `https://hub.docker.com/v2/repositories/${repoPath}`;
+    const rawTag = imageTag.includes(':') ? imageTag.split(':')[1] : 'latest';
+    const rawRepo = imageTag.split(':')[0];
+    const isOfficial = !rawRepo.includes('/');
+    const repoPath = isOfficial ? `library/${serviceType}` : rawRepo;
+    const repoUrl = `https://hub.docker.com/v2/repositories/${repoPath}`;
+    const tagUrl = `https://hub.docker.com/v2/repositories/${repoPath}/tags/${rawTag}`;
     const retrievedAt = Date.now();
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-      const res = await fetch(sourceUrl, {
-        signal: controller.signal,
-        headers: { 'User-Agent': 'DeployMind-Service-Researcher/1.0' },
-      }).finally(() => clearTimeout(timeoutId));
+      const [repoRes, tagRes] = await Promise.all([
+        fetch(repoUrl, {
+          signal: controller.signal,
+          headers: { 'User-Agent': 'DeployMind-Service-Researcher/1.0' },
+        }).catch(() => null),
+        fetch(tagUrl, {
+          signal: controller.signal,
+          headers: { 'User-Agent': 'DeployMind-Service-Researcher/1.0' },
+        }).catch(() => null),
+      ]).finally(() => clearTimeout(timeoutId));
 
-      if (res.ok) {
-        const data = (await res.json()) as any;
-        const rawPayload = JSON.stringify(data);
+      let repoData: any = null;
+      let tagData: any = null;
+
+      if (repoRes && repoRes.ok) {
+        repoData = await repoRes.json().catch(() => null);
+      }
+      if (tagRes && tagRes.ok) {
+        tagData = await tagRes.json().catch(() => null);
+      }
+
+      // Resolve real OCI manifest digest from tag metadata
+      let resolvedDigest: string | undefined;
+      if (tagData) {
+        if (typeof tagData.digest === 'string' && tagData.digest.startsWith('sha256:')) {
+          resolvedDigest = tagData.digest;
+        } else if (Array.isArray(tagData.images)) {
+          const matchingImg = tagData.images.find(
+            (img: any) => typeof img.digest === 'string' && img.digest.startsWith('sha256:')
+          );
+          if (matchingImg) {
+            resolvedDigest = matchingImg.digest;
+          }
+        }
+      }
+
+      if (repoData || tagData) {
+        const combinedPayload = { repo: repoData, tag: tagData };
+        const rawPayload = JSON.stringify(combinedPayload);
         const rawPayloadHash = crypto.createHash('sha256').update(rawPayload).digest('hex');
+        const hasVerifiedDigest = Boolean(resolvedDigest && resolvedDigest.startsWith('sha256:'));
+
         return {
-          sourceUrl,
-          verified: true,
-          digest: data.last_updated ? `updated_${data.last_updated}` : undefined,
+          sourceUrl: repoUrl,
+          verified: hasVerifiedDigest,
+          digest: resolvedDigest,
           metadataPayload: {
-            starCount: data.star_count,
-            pullCount: data.pull_count,
-            isOfficial: Boolean(data.is_official),
+            starCount: repoData?.star_count,
+            pullCount: repoData?.pull_count,
+            isOfficial: Boolean(repoData?.is_official),
+            tagFound: Boolean(tagData),
+            tag: rawTag,
           },
           retrievedAt,
           rawPayloadHash,
@@ -118,11 +171,11 @@ export class ServiceDefinitionGenerator {
       // In offline or unit-test environments, safely record attempt with hash
     }
 
-    const fallbackPayload = `offline_evidence:${sourceUrl}:${serviceType}:${imageTag}`;
+    const fallbackPayload = `offline_evidence:${repoUrl}:${serviceType}:${imageTag}`;
     const rawPayloadHash = crypto.createHash('sha256').update(fallbackPayload).digest('hex');
 
     return {
-      sourceUrl,
+      sourceUrl: repoUrl,
       verified: false,
       retrievedAt,
       rawPayloadHash,
@@ -130,22 +183,33 @@ export class ServiceDefinitionGenerator {
   }
 
   /**
-   * Computes a canonical SHA-256 hash over the complete definition structure
+   * Computes a deterministic canonical SHA-256 hash over all semantic definition fields
+   * using key-sorted recursive serialization.
    */
   computeCanonicalContentHash(def: Record<string, any>): string {
-    const canonical = {
+    const semantic = {
+      id: def.id,
       serviceType: def.serviceType,
-      image: def.image,
+      aliases: Array.isArray(def.aliases) ? [...def.aliases].sort() : [],
       category: def.category,
+      version: def.version,
+      image: def.image,
+      imageDigest: def.imageDigest || null,
       defaultInternalPort: def.defaultInternalPort,
+      environment: def.environment || {},
       volumes: def.volumes || [],
-      securityPolicy: def.securityPolicy || {},
+      healthCheck: def.healthCheck || {},
       multiTenancy: def.multiTenancy || {},
       provisionWorkflow: def.provisionWorkflow || [],
       deprovisionWorkflow: def.deprovisionWorkflow || [],
       connectionContract: def.connectionContract || {},
+      securityPolicy: def.securityPolicy || {},
+      provenance: {
+        source: def.provenance?.source,
+        evidenceSources: def.provenance?.evidenceSources || [],
+      },
     };
-    return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+    return crypto.createHash('sha256').update(canonicalStringify(semantic)).digest('hex');
   }
 
   /**
@@ -242,12 +306,11 @@ export class ServiceDefinitionGenerator {
       },
     };
 
-    const contentHash = this.computeCanonicalContentHash(draftDef);
-
     const definition: ServiceDefinition = {
       id: `def_${serviceType}_${crypto.randomUUID().slice(0, 8)}`,
       aliases: [serviceType],
       version: 'latest',
+      imageDigest: evidence.digest,
       ...draftDef,
       provenance: {
         source: 'ai_generated',
@@ -258,8 +321,9 @@ export class ServiceDefinitionGenerator {
         generatedAt: evidence.retrievedAt,
       },
       status: 'candidate',
-      contentHash,
     };
+
+    definition.contentHash = this.computeCanonicalContentHash(definition);
 
     return definition;
   }
@@ -280,6 +344,7 @@ export class ServiceDefinitionGenerator {
 
     const parsed = JSON.parse(existing.definitionPayload) as ServiceDefinition;
     parsed.status = 'approved';
+    parsed.contentHash = this.computeCanonicalContentHash(parsed);
 
     await db
       .update(schema.serviceDefinitions)
@@ -289,6 +354,14 @@ export class ServiceDefinitionGenerator {
         updatedAt: Date.now(),
       })
       .where(eq(schema.serviceDefinitions.serviceType, canonicalType));
+
+    try {
+      const { resourceRegistry } = await import('../resource.registry.js');
+      const adapter = resourceRegistry.getAdapter(canonicalType);
+      if (adapter && (adapter as any).definition) {
+        (adapter as any).definition = parsed;
+      }
+    } catch {}
 
     return parsed;
   }
@@ -316,6 +389,14 @@ export class ServiceDefinitionGenerator {
         updatedAt: Date.now(),
       })
       .where(eq(schema.serviceDefinitions.serviceType, canonicalType));
+
+    try {
+      const { resourceRegistry } = await import('../resource.registry.js');
+      const adapter = resourceRegistry.getAdapter(canonicalType);
+      if (adapter && (adapter as any).definition) {
+        (adapter as any).definition = parsed;
+      }
+    } catch {}
   }
 
   /**
@@ -330,6 +411,14 @@ export class ServiceDefinitionGenerator {
         updatedAt: Date.now(),
       })
       .where(eq(schema.serviceDefinitions.serviceType, canonicalType));
+
+    try {
+      const { resourceRegistry } = await import('../resource.registry.js');
+      const adapter = resourceRegistry.getAdapter(canonicalType);
+      if (adapter && (adapter as any).definition) {
+        (adapter as any).definition.status = 'revoked';
+      }
+    } catch {}
   }
 
   /**
@@ -373,6 +462,10 @@ export class ServiceDefinitionGenerator {
    * Stores the definition in SQLite for auditability and future reuse
    */
   private async persistDefinition(def: ServiceDefinition, status: 'approved' | 'candidate' = 'approved'): Promise<void> {
+    def.status = def.status || status;
+    const finalStatus = def.status;
+    const payload = JSON.stringify(def);
+
     await db
       .insert(schema.serviceDefinitions)
       .values({
@@ -380,18 +473,18 @@ export class ServiceDefinitionGenerator {
         serviceType: def.serviceType,
         version: def.version,
         category: def.category,
-        definitionPayload: JSON.stringify(def),
+        definitionPayload: payload,
         provenance: def.provenance.source,
-        status: def.status || status,
+        status: finalStatus,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       })
       .onConflictDoUpdate({
         target: schema.serviceDefinitions.serviceType,
         set: {
-          definitionPayload: JSON.stringify(def),
+          definitionPayload: payload,
           version: def.version,
-          status: def.status || status,
+          status: finalStatus,
           updatedAt: Date.now(),
         },
       });

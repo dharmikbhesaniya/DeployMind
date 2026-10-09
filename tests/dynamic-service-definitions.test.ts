@@ -230,7 +230,7 @@ describe('Dynamic Service Definitions & Autonomous Multi-Tenant Infrastructure (
   });
 
   describe('4. Dynamic Definition Security & Reliability Hardening (Review Findings)', () => {
-    it('should provision dedicated instance for unfamiliar technology without assuming unproven multi-tenancy', async () => {
+    it('should block candidate unfamiliar technology and provision dedicated instance only after approval', async () => {
       const projCassandra = `proj_cas_${Date.now()}`;
       await db.insert(schema.projects).values({
         id: projCassandra,
@@ -242,8 +242,18 @@ describe('Dynamic Service Definitions & Autonomous Multi-Tenant Infrastructure (
         updatedAt: Date.now(),
       });
 
+      // Step 1: Candidate status blocks execution at policy boundary
+      const unapprovedPlan = await resourcePlanner.evaluateRequirement({ type: 'cassandra' });
+      expect(unapprovedPlan.decision.action).toBe('reject');
+      expect(unapprovedPlan.decision.reason).toContain('candidate');
+
+      // Step 2: Operator reviews and approves definition
+      const approvedDef = await serviceDefinitionGenerator.approveDefinition('cassandra');
+      expect(approvedDef.status).toBe('approved');
+      expect(approvedDef.contentHash).toBeDefined();
+
+      // Step 3: Now planner evaluates approved definition and provisions dedicated instance
       const plan = await resourcePlanner.evaluateRequirement({ type: 'cassandra' });
-      // Since cassandra is unverified candidate, sharing is not supported -> must provision dedicated!
       expect(plan.decision.action).toBe('provision');
       expect(plan.reasoning).toContain('does not support multi-tenant sharing');
 
@@ -372,6 +382,110 @@ describe('Dynamic Service Definitions & Autonomous Multi-Tenant Infrastructure (
           ],
         });
       }).toThrow(/Unsafe shell execution token/);
+    });
+
+    it('should enforce execution boundary and prevent candidate definitions from running ensureInstance or provisionTenant', async () => {
+      const { GenericDefinitionAdapter } = await import('../src/modules/resources/adapters/generic.definition.adapter.js');
+      const candidateDef: any = {
+        id: 'def_unapproved_1',
+        serviceType: 'unapproved_db',
+        aliases: ['unapproved_db'],
+        category: 'sql',
+        version: '1.0',
+        image: 'unapproved:1.0',
+        defaultInternalPort: 1234,
+        healthCheck: { type: 'tcp', port: 1234 },
+        multiTenancy: { supported: false, isolationStrategy: 'dedicated_only' },
+        provisionWorkflow: [],
+        deprovisionWorkflow: [],
+        connectionContract: { envMappings: {} },
+        securityPolicy: { disallowPrivileged: true, disallowHostMounts: true },
+        provenance: { source: 'ai_generated', generatedAt: Date.now() },
+        status: 'candidate',
+      };
+
+      const unapprovedAdapter = new GenericDefinitionAdapter(candidateDef);
+
+      await expect(unapprovedAdapter.ensureInstance('res_test')).rejects.toThrow(
+        /Execution boundary violation/
+      );
+      await expect(
+        unapprovedAdapter.provisionTenant('test_container', 'proj_test', { type: 'unapproved_db' })
+      ).rejects.toThrow(/Execution boundary violation/);
+    });
+
+    it('should alter canonical content hash when execution-relevant fields (healthCheck, environment, image) change', () => {
+      const baseDef = {
+        id: 'def_test_1',
+        serviceType: 'test_db',
+        aliases: ['test'],
+        category: 'sql' as const,
+        version: '1.0',
+        image: 'postgres:16-alpine',
+        imageDigest: 'sha256:abcd1234ef5678',
+        defaultInternalPort: 5432,
+        environment: { DB_NAME: 'test' },
+        volumes: [{ nameSuffix: 'data', containerPath: '/data' }],
+        healthCheck: { type: 'tcp' as const, port: 5432 },
+        multiTenancy: { supported: true, isolationStrategy: 'database_per_tenant' as const },
+        provisionWorkflow: [],
+        deprovisionWorkflow: [],
+        connectionContract: { envMappings: { DB_URL: '${URI}' } },
+        securityPolicy: { disallowPrivileged: true, disallowHostMounts: true },
+        provenance: { source: 'builtin' as const, evidenceSources: ['doc1'] },
+      };
+
+      const baseHash = serviceDefinitionGenerator.computeCanonicalContentHash(baseDef);
+
+      // 1. Changing health check port must alter hash
+      const mutatedHealth = {
+        ...baseDef,
+        healthCheck: { type: 'tcp' as const, port: 5433 },
+      };
+      expect(serviceDefinitionGenerator.computeCanonicalContentHash(mutatedHealth)).not.toBe(baseHash);
+
+      // 2. Changing environment must alter hash
+      const mutatedEnv = {
+        ...baseDef,
+        environment: { DB_NAME: 'test', NEW_FLAG: '1' },
+      };
+      expect(serviceDefinitionGenerator.computeCanonicalContentHash(mutatedEnv)).not.toBe(baseHash);
+
+      // 3. Changing image must alter hash
+      const mutatedImage = {
+        ...baseDef,
+        image: 'postgres:17-alpine',
+      };
+      expect(serviceDefinitionGenerator.computeCanonicalContentHash(mutatedImage)).not.toBe(baseHash);
+
+      // 4. Changing imageDigest must alter hash
+      const mutatedDigest = {
+        ...baseDef,
+        imageDigest: 'sha256:99999999999999',
+      };
+      expect(serviceDefinitionGenerator.computeCanonicalContentHash(mutatedDigest)).not.toBe(baseHash);
+
+      // 5. Canonical serialization is key-order independent
+      const reorderedDef = {
+        category: 'sql' as const,
+        version: '1.0',
+        serviceType: 'test_db',
+        id: 'def_test_1',
+        securityPolicy: { disallowHostMounts: true, disallowPrivileged: true },
+        connectionContract: { envMappings: { DB_URL: '${URI}' } },
+        multiTenancy: { isolationStrategy: 'database_per_tenant' as const, supported: true },
+        deprovisionWorkflow: [],
+        provisionWorkflow: [],
+        healthCheck: { port: 5432, type: 'tcp' as const },
+        volumes: [{ containerPath: '/data', nameSuffix: 'data' }],
+        environment: { DB_NAME: 'test' },
+        defaultInternalPort: 5432,
+        imageDigest: 'sha256:abcd1234ef5678',
+        image: 'postgres:16-alpine',
+        aliases: ['test'],
+        provenance: { evidenceSources: ['doc1'], source: 'builtin' as const },
+      };
+      expect(serviceDefinitionGenerator.computeCanonicalContentHash(reorderedDef)).toBe(baseHash);
     });
 
     it('should block planning and resolution when a service definition is rejected', async () => {
