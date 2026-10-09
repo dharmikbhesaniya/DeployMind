@@ -1,8 +1,10 @@
+import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { dockerService } from '../docker/docker.service.js';
 import { db, schema } from '../../db/index.js';
 import { resourceRegistry } from './resource.registry.js';
 import { resourcePlanner } from './resource.planner.js';
+import { vaultService } from '../vault/vault.service.js';
 import type {
   ResourceRequirement,
   ResourceTenantBinding,
@@ -18,14 +20,49 @@ export interface TenantCredentials {
 export class ResourceManager {
   readonly sharedPostgresName = 'deploymind-shared-postgres';
   readonly sharedRedisName = 'deploymind-shared-redis';
+  private dynamicPgPass: string | null = null;
+  private dynamicRedisPass: string | null = null;
 
-  // Backwards-compatible secret getters
+  // Resolves the persistent AES-256 Vault admin credential for any backing service
+  async resolveAdminPassword(resourceType: string): Promise<string> {
+    const normalized = resourceRegistry.normalizeType(resourceType);
+    const containerName = `deploymind-shared-${normalized}`;
+    const secretKey = `ADMIN_SECRET_${containerName.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+    return vaultService.getOrCreateSecret(
+      secretKey,
+      `Administrative credential for ${containerName}`
+    );
+  }
+
+  // Non-hardcoded cryptographically secure admin credential getters (persisted in Vault)
   getPostgresAdminPassword(): string {
-    return 'deploymind_admin_sec_pg';
+    if (!this.dynamicPgPass) {
+      this.dynamicPgPass = crypto.randomBytes(24).toString('hex');
+      vaultService
+        .createCredential({
+          keyName: 'ADMIN_SECRET_DEPLOYMIND_SHARED_POSTGRES',
+          plaintextValue: this.dynamicPgPass,
+          description: 'Administrative credential for deploymind-shared-postgres',
+          isSystemGenerated: true,
+        })
+        .catch(() => {});
+    }
+    return this.dynamicPgPass;
   }
 
   getRedisAdminPassword(): string {
-    return 'deploymind_admin_sec_redis';
+    if (!this.dynamicRedisPass) {
+      this.dynamicRedisPass = crypto.randomBytes(24).toString('hex');
+      vaultService
+        .createCredential({
+          keyName: 'ADMIN_SECRET_DEPLOYMIND_SHARED_REDIS',
+          plaintextValue: this.dynamicRedisPass,
+          description: 'Administrative credential for deploymind-shared-redis',
+          isSystemGenerated: true,
+        })
+        .catch(() => {});
+    }
+    return this.dynamicRedisPass;
   }
 
   // Ensures any backing service cluster is online and tracked in DB

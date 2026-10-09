@@ -499,6 +499,16 @@ export class DockerService {
       return false;
     }
   }
+
+  // Returns container inspection details for verification and reconciliation
+  async inspectContainer(containerNameOrId: string): Promise<Docker.ContainerInspectInfo | null> {
+    try {
+      const container = this.docker.getContainer(containerNameOrId);
+      return await container.inspect();
+    } catch {
+      return null;
+    }
+  }
 }
 
 export const dockerService = new DockerService();

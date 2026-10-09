@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { eq } from 'drizzle-orm';
+import { db, schema } from '../../../db/index.js';
 import type {
   ResourceAdapter,
   ResourceRequirement,
@@ -16,8 +18,6 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
   readonly sharingSupported: boolean;
   readonly capabilities: string[];
   readonly definition: ServiceDefinition;
-
-  private adminSecrets = new Map<string, string>();
 
   constructor(definition: ServiceDefinition) {
     this.definition = definition;
@@ -56,6 +56,11 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
 
     const isDockerAvailable = await dockerService.isAvailable();
     if (!isDockerAvailable) {
+      if (process.env.NODE_ENV !== 'test') {
+        throw new Error(
+          `Docker daemon is unavailable. Cannot provision backing service "${this.type}" in production mode.`
+        );
+      }
       return {
         containerName,
         hostPort: this.defaultPort,
@@ -70,6 +75,17 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
 
     const isRunning = await dockerService.isContainerRunning(containerName);
     if (isRunning) {
+      // Reconcile and verify running container
+      const inspectInfo = await dockerService.inspectContainer(containerName);
+      if (inspectInfo && inspectInfo.Config?.Labels) {
+        const serviceTypeLabel = inspectInfo.Config.Labels['deploymind.service_type'];
+        if (serviceTypeLabel && serviceTypeLabel !== this.type) {
+          throw new Error(
+            `Container conflict: Existing container "${containerName}" is for type "${serviceTypeLabel}", expected "${this.type}".`
+          );
+        }
+      }
+
       return {
         containerName,
         hostPort: this.defaultPort,
@@ -81,20 +97,12 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
       };
     }
 
-    // Securely generate administrative credentials
-    let adminPassword = this.adminSecrets.get(containerName);
-    if (!adminPassword) {
-      adminPassword = crypto.randomBytes(24).toString('hex');
-      this.adminSecrets.set(containerName, adminPassword);
-      await vaultService
-        .createCredential({
-          keyName: `ADMIN_SECRET_${containerName.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`,
-          plaintextValue: adminPassword,
-          description: `Administrative credential for ${containerName}`,
-          isSystemGenerated: true,
-        })
-        .catch(() => {});
-    }
+    // Persist and retrieve admin secrets strictly via encrypted AES-256 Vault
+    const secretKey = `ADMIN_SECRET_${containerName.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+    const adminPassword = await vaultService.getOrCreateSecret(
+      secretKey,
+      `Administrative credential for ${containerName}`
+    );
 
     // Substitute container environment tokens
     const containerEnv: Record<string, string> = {};
@@ -168,14 +176,15 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
     const cleanProjId = projectId.toLowerCase().replace(/[^a-z0-9]/g, '_');
     const cleanType = this.type.toLowerCase().replace(/[^a-z0-9]/g, '_');
 
-    // Generate isolated credentials securely
+    // Generate isolated credentials securely with symmetric naming conventions
     const tenantPrefix = `proj_${cleanProjId}`;
     const databaseName = `db_${cleanProjId}`;
     const username = `usr_${cleanType.slice(0, 4)}_${cleanProjId.slice(0, 10)}`;
     const password = crypto.randomBytes(16).toString('hex');
     const tenantTopic = `topic_${cleanProjId}`;
 
-    const adminPassword = this.adminSecrets.get(instanceContainerName) || '';
+    const secretKey = `ADMIN_SECRET_${instanceContainerName.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+    const adminPassword = (await vaultService.getDecryptedCredentialByKey(secretKey)) || '';
 
     const isDockerAvailable = await dockerService.isAvailable();
     if (isDockerAvailable) {
@@ -195,10 +204,17 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
           );
 
           try {
-            await dockerService.execCommand(instanceContainerName, substitutedCmd);
+            const execRes = await dockerService.execCommand(instanceContainerName, substitutedCmd);
+            if (execRes && typeof execRes.exitCode === 'number' && execRes.exitCode !== 0 && !step.ignoreFailure) {
+              throw new Error(`Provision step "${step.name}" exited with code ${execRes.exitCode}: ${execRes.output}`);
+            }
           } catch (err: any) {
             if (!step.ignoreFailure) {
-              console.warn(`[GenericDefinitionAdapter:${this.type}] Provision workflow step "${step.name}" notice: ${err.message}`);
+              if (process.env.NODE_ENV !== 'test') {
+                throw new Error(`Mandatory provision step "${step.name}" failed: ${err.message}`);
+              } else {
+                console.warn(`[GenericDefinitionAdapter:${this.type}] Provision workflow step "${step.name}" notice: ${err.message}`);
+              }
             }
           }
         }
@@ -249,7 +265,11 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
         description: `Tenant credentials for project ${projectId} on ${instanceContainerName}`,
         isSystemGenerated: true,
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (process.env.NODE_ENV !== 'test') {
+          throw new Error(`Failed to securely persist tenant credential in Vault: ${err.message}`);
+        }
+      });
 
     return {
       connectionUri,
@@ -266,12 +286,19 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
     const cleanProjId = projectId.toLowerCase().replace(/[^a-z0-9]/g, '_');
     const cleanType = this.type.toLowerCase().replace(/[^a-z0-9]/g, '_');
 
-    const tenantBase = cleanProjId.startsWith('proj_') ? cleanProjId.slice(5) : cleanProjId;
-    const tenantPrefix = `proj_${tenantBase}`;
-    const databaseName = `db_${cleanType.slice(0, 4)}_${cleanProjId}`;
-    const username = `usr_${cleanType.slice(0, 4)}_${tenantBase.slice(0, 10)}`;
+    // Look up persisted tenant details if available to ensure exact symmetric cleanup
+    const [storedTenant] = await db
+      .select()
+      .from(schema.resourceTenants)
+      .where(eq(schema.resourceTenants.projectId, projectId));
+
+    const databaseName = storedTenant?.databaseName || `db_${cleanProjId}`;
+    const username = storedTenant?.username || `usr_${cleanType.slice(0, 4)}_${cleanProjId.slice(0, 10)}`;
     const tenantTopic = `topic_${cleanProjId}`;
-    const adminPassword = this.adminSecrets.get(instanceContainerName) || '';
+    const tenantPrefix = `proj_${cleanProjId}`;
+
+    const secretKey = `ADMIN_SECRET_${instanceContainerName.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+    const adminPassword = (await vaultService.getDecryptedCredentialByKey(secretKey)) || '';
 
     const isDockerAvailable = await dockerService.isAvailable();
     if (isDockerAvailable && this.definition.deprovisionWorkflow) {

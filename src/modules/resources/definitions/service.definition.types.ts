@@ -78,4 +78,6 @@ export interface ServiceDefinition {
     evidenceSources?: string[];
     generatedAt: number;
   };
+  status?: 'candidate' | 'approved' | 'rejected' | 'revoked';
+  contentHash?: string;
 }

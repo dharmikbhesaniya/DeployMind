@@ -56,15 +56,16 @@ export class ResourcePlanner {
     // Policy Check 3: Query active shared cluster candidates
     const candidates = await resourceRegistry.listCandidates(normalizedType);
 
-    // Filter out dedicated instances from candidate reuse pool
-    const sharedCandidates = candidates.filter((c) => {
-      // Exclude dedicated containers and unavailable instances
-      return c.status !== 'unavailable';
-    });
+    // Filter to healthy candidates only (reject degraded and unavailable instances)
+    const healthyCandidates = candidates.filter((c) => c.status === 'healthy');
+
+    // Retrieve maximum tenant capacity from definition if available
+    const maxTenants =
+      (adapter as any)?.definition?.multiTenancy?.maxTenantsPerInstance || 50;
 
     // Policy Check 4: Find healthy instance with available capacity
-    const healthyCandidate = sharedCandidates.find(
-      (c) => (c.capacity.activeTenants || 0) < 50
+    const healthyCandidate = healthyCandidates.find(
+      (c) => (c.capacity.activeTenants || 0) < maxTenants
     );
 
     if (healthyCandidate) {

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../src/db/index.js';
 import { resourceRegistry } from '../src/modules/resources/resource.registry.js';
@@ -7,6 +7,10 @@ import { resourceManager } from '../src/modules/resources/resource.manager.js';
 import { serviceDefinitionGenerator } from '../src/modules/resources/definitions/service.definition.generator.js';
 
 describe('Dynamic Service Definitions & Autonomous Multi-Tenant Infrastructure (pov.txt)', () => {
+  beforeAll(async () => {
+    await db.delete(schema.serviceDefinitions).where(eq(schema.serviceDefinitions.serviceType, 'cassandra'));
+  });
+
   describe('1. Dynamic Service Definition Generation (No Hardcoded TypeScript Adapters)', () => {
     it('should resolve and mount dynamic definitions for ClickHouse, Neo4j, and Kafka', async () => {
       const clickhouseDef = await serviceDefinitionGenerator.getOrGenerateDefinition({ serviceType: 'clickhouse' });
@@ -38,13 +42,18 @@ describe('Dynamic Service Definitions & Autonomous Multi-Tenant Infrastructure (
       expect(cassandraDef.securityPolicy.disallowPrivileged).toBe(true);
       expect(cassandraDef.securityPolicy.disallowHostMounts).toBe(true);
       expect(cassandraDef.connectionContract.envMappings.CASSANDRA_URL).toBeDefined();
+      expect(cassandraDef.multiTenancy.supported).toBe(false);
+      expect(cassandraDef.multiTenancy.isolationStrategy).toBe('dedicated_only');
+      expect(cassandraDef.provenance.evidenceSources?.length).toBeGreaterThan(0);
+      expect(cassandraDef.contentHash).toBeDefined();
 
-      // Ensure it is stored in database
+      // Ensure it is stored in database as candidate
       const [stored] = await db
         .select()
         .from(schema.serviceDefinitions)
         .where(eq(schema.serviceDefinitions.serviceType, 'cassandra'));
       expect(stored).toBeDefined();
+      expect(stored?.status).toBe('candidate');
     });
 
     it('should dynamically mount an adapter on-the-fly when resourceRegistry encounters a new technology', async () => {
@@ -217,6 +226,86 @@ describe('Dynamic Service Definitions & Autonomous Multi-Tenant Infrastructure (
       // Assert that the two dedicated instances have distinct identities and connection URIs
       expect(exec1.resourceId).not.toBe(exec2.resourceId);
       expect(exec1.binding.connectionUri).not.toBe(exec2.binding.connectionUri);
+    });
+  });
+
+  describe('4. Dynamic Definition Security & Reliability Hardening (Review Findings)', () => {
+    it('should provision dedicated instance for unfamiliar technology without assuming unproven multi-tenancy', async () => {
+      const projCassandra = `proj_cas_${Date.now()}`;
+      await db.insert(schema.projects).values({
+        id: projCassandra,
+        name: 'Cassandra App',
+        slug: `cas-app-${Date.now()}`,
+        repoUrl: 'https://github.com/example/cassandra-app',
+        branch: 'main',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+
+      const plan = await resourcePlanner.evaluateRequirement({ type: 'cassandra' });
+      // Since cassandra is unverified candidate, sharing is not supported -> must provision dedicated!
+      expect(plan.decision.action).toBe('provision');
+      expect(plan.reasoning).toContain('does not support multi-tenant sharing');
+
+      const exec = await resourcePlanner.executeDecision({
+        decision: plan.decision,
+        projectId: projCassandra,
+        requirement: { type: 'cassandra' },
+      });
+
+      expect(exec.reused).toBe(false);
+      expect(exec.binding.credentials.CASSANDRA_URL).toBeDefined();
+    });
+
+    it('should preserve exact symmetric tenant identifiers between provisioning and deprovisioning', async () => {
+      const projSym = `proj_sym_${Date.now()}`;
+      await db.insert(schema.projects).values({
+        id: projSym,
+        name: 'Symmetric App',
+        slug: `sym-app-${Date.now()}`,
+        repoUrl: 'https://github.com/example/sym-app',
+        branch: 'main',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+
+      const plan = await resourcePlanner.evaluateRequirement({ type: 'postgres' });
+      const exec = await resourcePlanner.executeDecision({
+        decision: plan.decision,
+        projectId: projSym,
+        requirement: { type: 'postgres' },
+      });
+
+      const [storedTenant] = await db
+        .select()
+        .from(schema.resourceTenants)
+        .where(eq(schema.resourceTenants.projectId, projSym));
+
+      expect(storedTenant).toBeDefined();
+      expect(storedTenant?.databaseName).toBe(exec.binding.databaseName);
+      expect(storedTenant?.username).toBe(exec.binding.username);
+
+      // Deprovision should succeed idempotently
+      await resourceManager.deprovisionTenant(projSym, 'postgres');
+
+      const [deletedTenant] = await db
+        .select()
+        .from(schema.resourceTenants)
+        .where(eq(schema.resourceTenants.projectId, projSym));
+
+      expect(deletedTenant).toBeUndefined();
+    });
+
+    it('should reject service definitions violating strict security policy', () => {
+      expect(() => {
+        (serviceDefinitionGenerator as any).validateSecurityPolicy({
+          serviceType: 'unsafe_app',
+          defaultInternalPort: 80,
+          image: 'malicious/image;rm -rf /',
+          volumes: [{ nameSuffix: 'root', containerPath: '/' }],
+          securityPolicy: { disallowPrivileged: true, disallowHostMounts: true },
+        });
+      }).toThrow(/Security Policy Violation/);
     });
   });
 });

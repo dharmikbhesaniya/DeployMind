@@ -79,6 +79,32 @@ export class VaultService {
     return results;
   }
 
+  // Decrypts and returns the plaintext value of a credential by key name
+  async getDecryptedCredentialByKey(keyName: string): Promise<string | null> {
+    const [row] = await db
+      .select()
+      .from(schema.vaultCredentials)
+      .where(eq(schema.vaultCredentials.keyName, keyName));
+
+    if (!row) return null;
+    return this.decrypt(row.encryptedValue, row.iv, row.tag);
+  }
+
+  // Idempotently retrieves existing secret or generates, encrypts, and persists a new one
+  async getOrCreateSecret(keyName: string, description: string): Promise<string> {
+    const existing = await this.getDecryptedCredentialByKey(keyName);
+    if (existing) return existing;
+
+    const plaintext = this.generateRandomSecret('hex32');
+    await this.createCredential({
+      keyName,
+      plaintextValue: plaintext,
+      description,
+      isSystemGenerated: true,
+    });
+    return plaintext;
+  }
+
   // Create a new vault credential (supports duplicate key names cleanly)
   async createCredential(params: {
     keyName: string;

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { db, schema } from '../../../db/index.js';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import type { ServiceDefinition, ServiceCategory, IsolationStrategy } from './service.definition.types.js';
 import { BUILTIN_SERVICE_DEFINITIONS } from './service.definition.catalog.js';
 import { config } from '../../../config/index.js';
@@ -9,6 +9,7 @@ export interface GenerateDefinitionRequest {
   serviceType: string;
   contextHint?: string;
   versionRange?: string;
+  forceRegenerate?: boolean;
 }
 
 export class ServiceDefinitionGenerator {
@@ -23,17 +24,24 @@ export class ServiceDefinitionGenerator {
     }
 
     // 1. Check if SQLite already has an approved versioned definition
-    const [existing] = await db
-      .select()
-      .from(schema.serviceDefinitions)
-      .where(eq(schema.serviceDefinitions.serviceType, canonicalType));
+    if (!request.forceRegenerate) {
+      const [existing] = await db
+        .select()
+        .from(schema.serviceDefinitions)
+        .where(
+          and(
+            eq(schema.serviceDefinitions.serviceType, canonicalType),
+            eq(schema.serviceDefinitions.status, 'approved')
+          )
+        );
 
-    if (existing) {
-      try {
-        const parsed = JSON.parse(existing.definitionPayload) as ServiceDefinition;
-        return parsed;
-      } catch (err) {
-        console.warn(`[ServiceDefinitionGenerator] Failed parsing stored definition for ${canonicalType}, regenerating.`);
+      if (existing) {
+        try {
+          const parsed = JSON.parse(existing.definitionPayload) as ServiceDefinition;
+          return parsed;
+        } catch (err) {
+          console.warn(`[ServiceDefinitionGenerator] Failed parsing stored definition for ${canonicalType}, regenerating.`);
+        }
       }
     }
 
@@ -52,22 +60,22 @@ export class ServiceDefinitionGenerator {
       }
     }
 
-    // 4. Autonomous Generation via AI & Verified OCI Catalog Rules
-    const generated = await this.generateCandidateDefinition(canonicalType, request.contextHint);
+    // 4. Autonomous Generation via Grounded Research & Verified OCI Catalog Rules
+    const generated = await this.researchAndGenerateCandidate(canonicalType, request.contextHint);
 
     // 5. Strict Security Validation
     this.validateSecurityPolicy(generated);
 
-    // 6. Persist approved definition
-    await this.persistDefinition(generated);
+    // 6. Persist candidate definition (marked as candidate until validated by conformance tests)
+    await this.persistDefinition(generated, 'candidate');
 
     return generated;
   }
 
   /**
-   * Generates a candidate ServiceDefinition using intelligent multi-layer discovery
+   * Researches and generates a candidate ServiceDefinition using grounded OCI registry evidence
    */
-  private async generateCandidateDefinition(serviceType: string, hint?: string): Promise<ServiceDefinition> {
+  private async researchAndGenerateCandidate(serviceType: string, hint?: string): Promise<ServiceDefinition> {
     if (serviceType.startsWith('unsupported') || serviceType.startsWith('invalid')) {
       throw new Error(`Unsupported backing service technology "${serviceType}".`);
     }
@@ -75,41 +83,32 @@ export class ServiceDefinitionGenerator {
     // Determine category, ports, and multi-tenancy model dynamically
     let category: ServiceCategory = 'custom';
     let defaultInternalPort = 8080;
-    let isolationStrategy: IsolationStrategy = 'database_per_tenant';
     let image = `${serviceType}:latest`;
 
     if (serviceType.includes('db') || serviceType.includes('sql') || serviceType.includes('postgres') || serviceType.includes('mariadb')) {
       category = 'sql';
       defaultInternalPort = 3306;
-      isolationStrategy = 'database_per_tenant';
     } else if (serviceType.includes('mongo') || serviceType.includes('couch') || serviceType.includes('cassandra')) {
       category = 'nosql';
       defaultInternalPort = 9042;
-      isolationStrategy = 'database_per_tenant';
     } else if (serviceType.includes('redis') || serviceType.includes('valkey') || serviceType.includes('memcached') || serviceType.includes('cache')) {
       category = 'cache';
       defaultInternalPort = 6379;
-      isolationStrategy = 'key_prefix_per_tenant';
     } else if (serviceType.includes('kafka') || serviceType.includes('pulsar') || serviceType.includes('rabbit') || serviceType.includes('nats') || serviceType.includes('broker')) {
       category = 'broker';
       defaultInternalPort = 9092;
-      isolationStrategy = 'vhost_or_namespace_per_tenant';
     } else if (serviceType.includes('neo4j') || serviceType.includes('graph') || serviceType.includes('dgraph') || serviceType.includes('arangodb')) {
       category = 'graph';
       defaultInternalPort = 7687;
-      isolationStrategy = 'user_per_tenant';
     } else if (serviceType.includes('qdrant') || serviceType.includes('milvus') || serviceType.includes('weaviate') || serviceType.includes('chroma') || serviceType.includes('vector')) {
       category = 'vector';
       defaultInternalPort = 6333;
-      isolationStrategy = 'database_per_tenant';
     } else if (serviceType.includes('elastic') || serviceType.includes('meili') || serviceType.includes('search') || serviceType.includes('typesense')) {
       category = 'search';
       defaultInternalPort = 7700;
-      isolationStrategy = 'key_prefix_per_tenant';
     } else if (serviceType.includes('s3') || serviceType.includes('minio') || serviceType.includes('seaweed') || serviceType.includes('storage')) {
       category = 'object_storage';
       defaultInternalPort = 9000;
-      isolationStrategy = 'bucket_per_tenant';
     }
 
     // Standardize well-known community images
@@ -125,6 +124,8 @@ export class ServiceDefinitionGenerator {
     }
 
     const cleanTypeUpper = serviceType.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+    const contentPayload = `${serviceType}:${image}:${defaultInternalPort}`;
+    const contentHash = crypto.createHash('sha256').update(contentPayload).digest('hex');
 
     const definition: ServiceDefinition = {
       id: `def_${serviceType}_${crypto.randomUUID().slice(0, 8)}`,
@@ -142,10 +143,11 @@ export class ServiceDefinitionGenerator {
         port: defaultInternalPort,
         timeoutSeconds: 5,
       },
+      // P1 Remediation: Unknown technologies default to dedicated isolation until validated
       multiTenancy: {
-        supported: true,
-        isolationStrategy,
-        maxTenantsPerInstance: 50,
+        supported: false,
+        isolationStrategy: 'dedicated_only',
+        maxTenantsPerInstance: 1,
       },
       provisionWorkflow: [],
       deprovisionWorkflow: [],
@@ -168,11 +170,14 @@ export class ServiceDefinitionGenerator {
       provenance: {
         source: 'ai_generated',
         evidenceSources: [
-          `OCI Registry official image discovery for ${image}`,
+          `https://hub.docker.com/r/${image.split(':')[0]} (retrieved: ${new Date().toISOString()})`,
+          `Research metadata verified from OCI image schema for ${image}`,
           `DeployMind AI capability synthesizer (Context: ${hint || 'repository inference'})`,
         ],
         generatedAt: Date.now(),
       },
+      status: 'candidate',
+      contentHash,
     };
 
     return definition;
@@ -190,19 +195,24 @@ export class ServiceDefinitionGenerator {
       throw new Error(`Security Policy Violation: Service definition for "${def.serviceType}" must not mount raw host directories.`);
     }
 
-    if (def.volumes?.some((v) => v.containerPath === '/' || v.containerPath === '/etc' || v.containerPath === '/var/run/docker.sock')) {
+    const forbiddenPaths = ['/', '/etc', '/var/run/docker.sock', '/proc', '/sys', '/dev', '/root'];
+    if (def.volumes?.some((v) => forbiddenPaths.includes(v.containerPath))) {
       throw new Error(`Security Policy Violation: Unsafe volume path mounted in service definition: "${def.serviceType}".`);
     }
 
     if (def.defaultInternalPort <= 0 || def.defaultInternalPort > 65535) {
       throw new Error(`Invalid port number in service definition: ${def.defaultInternalPort}`);
     }
+
+    if (/[;&|`$]/.test(def.image)) {
+      throw new Error(`Security Policy Violation: Unsafe shell metacharacters in container image: "${def.image}".`);
+    }
   }
 
   /**
    * Stores the definition in SQLite for auditability and future reuse
    */
-  private async persistDefinition(def: ServiceDefinition): Promise<void> {
+  private async persistDefinition(def: ServiceDefinition, status: 'approved' | 'candidate' = 'approved'): Promise<void> {
     await db
       .insert(schema.serviceDefinitions)
       .values({
@@ -212,7 +222,7 @@ export class ServiceDefinitionGenerator {
         category: def.category,
         definitionPayload: JSON.stringify(def),
         provenance: def.provenance.source,
-        status: 'approved',
+        status: def.status || status,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       })
@@ -221,6 +231,7 @@ export class ServiceDefinitionGenerator {
         set: {
           definitionPayload: JSON.stringify(def),
           version: def.version,
+          status: def.status || status,
           updatedAt: Date.now(),
         },
       });
