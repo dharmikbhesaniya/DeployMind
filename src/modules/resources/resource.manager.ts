@@ -34,9 +34,9 @@ export class ResourceManager {
   // Ensures any backing service cluster is online and tracked in DB
   async ensureResource(type: string): Promise<string> {
     const normalized = resourceRegistry.normalizeType(type);
-    const adapter = resourceRegistry.getAdapter(normalized);
+    let adapter = resourceRegistry.getAdapter(normalized);
     if (!adapter) {
-      throw new Error(`Unsupported resource type: ${type}`);
+      adapter = await resourceRegistry.getOrResolveAdapter(normalized);
     }
 
     const resourceId = `res_shared_${normalized}`;
@@ -118,7 +118,10 @@ export class ResourceManager {
   // Deprovisions a specific tenant for any backing service
   async deprovisionTenant(projectId: string, type: string): Promise<void> {
     const normalized = resourceRegistry.normalizeType(type);
-    const adapter = resourceRegistry.getAdapter(normalized);
+    let adapter = resourceRegistry.getAdapter(normalized);
+    if (!adapter) {
+      adapter = await resourceRegistry.getOrResolveAdapter(normalized).catch(() => undefined);
+    }
     if (!adapter) return;
 
     const resourceId = `res_shared_${normalized}`;

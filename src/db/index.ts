@@ -103,6 +103,18 @@ export function initDatabase() {
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS service_definitions (
+      id TEXT PRIMARY KEY,
+      service_type TEXT NOT NULL UNIQUE,
+      version TEXT NOT NULL,
+      category TEXT NOT NULL,
+      definition_payload TEXT NOT NULL,
+      provenance TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'approved',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS system_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
@@ -146,3 +158,6 @@ export function initDatabase() {
 
 export const db = drizzle(sqlite, { schema });
 export { schema };
+
+// Ensure tables exist on load
+initDatabase();

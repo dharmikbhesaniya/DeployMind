@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { resourceRegistry } from './resource.registry.js';
@@ -16,19 +17,24 @@ export class ResourcePlanner {
   /**
    * Deterministic Policy Engine: Evaluates Compatibility, Capacity, and Isolation
    * to decide whether to REUSE an existing shared container or PROVISION a new one.
+   * If a technology is unfamiliar, dynamically synthesizes a verified ServiceDefinition.
    */
   async evaluateRequirement(requirement: ResourceRequirement): Promise<PlanEvaluationResult> {
     const normalizedType = resourceRegistry.normalizeType(requirement.type);
-    const adapter = resourceRegistry.getAdapter(normalizedType);
+    let adapter = resourceRegistry.getAdapter(normalizedType);
 
     if (!adapter) {
-      return {
-        decision: {
-          action: 'reject',
-          reason: `No backing service adapter available for resource type: "${requirement.type}". Supported types: ${resourceRegistry.listSupportedTypes().join(', ')}`,
-        },
-        reasoning: `Unsupported backing service technology "${requirement.type}".`,
-      };
+      try {
+        adapter = await resourceRegistry.getOrResolveAdapter(requirement.type);
+      } catch (err: any) {
+        return {
+          decision: {
+            action: 'reject',
+            reason: `No backing service adapter available and dynamic generation failed for "${requirement.type}": ${err.message}`,
+          },
+          reasoning: `Unsupported backing service technology "${requirement.type}".`,
+        };
+      }
     }
 
     // Policy Check 1: If application explicitly demands dedicated isolation
@@ -43,16 +49,22 @@ export class ResourcePlanner {
     if (!adapter.sharingSupported) {
       return {
         decision: { action: 'provision', requirement },
-        reasoning: `${normalizedType} adapter does not support multi-tenant sharing. Provisioning dedicated instance.`,
+        reasoning: `${normalizedType} does not support multi-tenant sharing. Provisioning dedicated container instance.`,
       };
     }
 
     // Policy Check 3: Query active shared cluster candidates
     const candidates = await resourceRegistry.listCandidates(normalizedType);
 
+    // Filter out dedicated instances from candidate reuse pool
+    const sharedCandidates = candidates.filter((c) => {
+      // Exclude dedicated containers and unavailable instances
+      return c.status !== 'unavailable';
+    });
+
     // Policy Check 4: Find healthy instance with available capacity
-    const healthyCandidate = candidates.find(
-      (c) => c.status !== 'unavailable' && (c.capacity.activeTenants || 0) < 50
+    const healthyCandidate = sharedCandidates.find(
+      (c) => (c.capacity.activeTenants || 0) < 50
     );
 
     if (healthyCandidate) {
@@ -61,11 +73,11 @@ export class ResourcePlanner {
           action: 'reuse',
           resourceId: healthyCandidate.id,
         },
-        reasoning: `Found compatible, healthy shared ${normalizedType} instance (${healthyCandidate.id}) with active capacity (${healthyCandidate.capacity.activeTenants || 0} existing tenants). Reusing container to minimize VPS RAM/CPU footprint.`,
+        reasoning: `Found compatible, healthy shared ${normalizedType} instance (${healthyCandidate.id}) with active capacity (${healthyCandidate.capacity.activeTenants || 0} existing tenants). Reusing container on deploymind-net to conserve VPS RAM/CPU footprint.`,
       };
     }
 
-    // If no active candidate exists, plan to provision one shared instance for this technology
+    // If no active shared candidate exists, plan to provision one shared baseline container
     return {
       decision: { action: 'provision', requirement },
       reasoning: `No active shared ${normalizedType} instance found on cluster network. Provisioning baseline shared container to host this and future applications.`,
@@ -73,7 +85,7 @@ export class ResourcePlanner {
   }
 
   /**
-   * Executes the planner decision (either reusing existing or provisioning new shared instance),
+   * Executes the planner decision (either reusing existing or provisioning new shared/dedicated instance),
    * binds the isolated tenant, records the dependency in SQLite, and returns connection variables.
    */
   async executeDecision(params: {
@@ -83,10 +95,10 @@ export class ResourcePlanner {
   }): Promise<{ binding: ResourceTenantBinding; resourceId: string; reused: boolean }> {
     const { decision, projectId, requirement } = params;
     const normalizedType = resourceRegistry.normalizeType(requirement.type);
-    const adapter = resourceRegistry.getAdapter(normalizedType);
+    let adapter = resourceRegistry.getAdapter(normalizedType);
 
     if (!adapter) {
-      throw new Error(`Cannot execute decision: No adapter registered for "${requirement.type}"`);
+      adapter = await resourceRegistry.getOrResolveAdapter(requirement.type);
     }
 
     if (decision.action === 'reject') {
@@ -110,9 +122,19 @@ export class ResourcePlanner {
       containerName = existing.containerName;
       reused = true;
     } else {
-      // Provision baseline container on deploymind-net
-      resourceId = `res_shared_${normalizedType}`;
-      const instanceInfo = await adapter.ensureInstance(resourceId);
+      const isDedicated = requirement.isolationLevel === 'dedicated';
+      const cleanProj = projectId.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 16);
+
+      if (isDedicated) {
+        resourceId = `res_dedicated_${normalizedType}_${cleanProj}_${crypto.randomUUID().slice(0, 8)}`;
+      } else {
+        resourceId = `res_shared_${normalizedType}`;
+      }
+
+      const instanceInfo = await adapter.ensureInstance(resourceId, {
+        isDedicated,
+        containerName: isDedicated ? `deploymind-${normalizedType}-dedicated-${cleanProj}` : undefined,
+      });
       containerName = instanceInfo.containerName;
 
       // Track in sharedResources table if not already tracked
@@ -128,8 +150,24 @@ export class ResourcePlanner {
           containerName,
           hostPort: instanceInfo.hostPort,
           isActive: true,
-          metadata: JSON.stringify(instanceInfo.metadata),
+          metadata: JSON.stringify({
+            ...(instanceInfo.metadata || {}),
+            isDedicated,
+          }),
         });
+      } else {
+        await db
+          .update(schema.sharedResources)
+          .set({
+            isActive: true,
+            containerName,
+            hostPort: instanceInfo.hostPort,
+            metadata: JSON.stringify({
+              ...(instanceInfo.metadata || {}),
+              isDedicated,
+            }),
+          })
+          .where(eq(schema.sharedResources.id, resourceId));
       }
     }
 

@@ -7,6 +7,9 @@ import { mysqlAdapter } from './adapters/mysql.adapter.js';
 import { mongoAdapter } from './adapters/mongodb.adapter.js';
 import { rabbitmqAdapter } from './adapters/rabbitmq.adapter.js';
 import { minioAdapter } from './adapters/minio.adapter.js';
+import { GenericDefinitionAdapter } from './adapters/generic.definition.adapter.js';
+import { BUILTIN_SERVICE_DEFINITIONS } from './definitions/service.definition.catalog.js';
+import { serviceDefinitionGenerator } from './definitions/service.definition.generator.js';
 
 export class ResourceRegistry {
   private adapters = new Map<string, ResourceAdapter>();
@@ -18,15 +21,27 @@ export class ResourceRegistry {
     ['amqp', 'rabbitmq'],
     ['s3', 'minio'],
     ['cache', 'redis'],
+    ['clickhouse-server', 'clickhouse'],
+    ['neo4j-db', 'neo4j'],
+    ['apache-kafka', 'kafka'],
   ]);
 
   constructor() {
+    // 1. Register baseline adapters
     this.registerAdapter(postgresAdapter);
     this.registerAdapter(redisAdapter);
     this.registerAdapter(mysqlAdapter);
     this.registerAdapter(mongoAdapter);
     this.registerAdapter(rabbitmqAdapter);
     this.registerAdapter(minioAdapter);
+
+    // 2. Register catalog definitions as generic definition adapters
+    for (const [key, def] of Object.entries(BUILTIN_SERVICE_DEFINITIONS)) {
+      this.registerAdapter(new GenericDefinitionAdapter(def));
+      for (const alias of def.aliases) {
+        this.typeAliases.set(alias.toLowerCase(), def.serviceType.toLowerCase());
+      }
+    }
   }
 
   registerAdapter(adapter: ResourceAdapter): void {
@@ -43,6 +58,30 @@ export class ResourceRegistry {
     return this.adapters.get(normalized);
   }
 
+  /**
+   * Dynamically resolves an adapter for ANY technology:
+   * If not already registered, researches, generates, validates, and mounts a dynamic adapter on the fly!
+   */
+  async getOrResolveAdapter(type: string, hint?: string): Promise<ResourceAdapter> {
+    const normalized = this.normalizeType(type);
+    const existing = this.adapters.get(normalized);
+    if (existing) return existing;
+
+    // Dynamically research and generate definition via AI and catalog discovery
+    const definition = await serviceDefinitionGenerator.getOrGenerateDefinition({
+      serviceType: normalized,
+      contextHint: hint,
+    });
+
+    const genericAdapter = new GenericDefinitionAdapter(definition);
+    this.registerAdapter(genericAdapter);
+    for (const alias of definition.aliases) {
+      this.typeAliases.set(alias.toLowerCase(), normalized);
+    }
+
+    return genericAdapter;
+  }
+
   listSupportedTypes(): string[] {
     return Array.from(this.adapters.keys());
   }
@@ -52,8 +91,7 @@ export class ResourceRegistry {
    */
   async listCandidates(type: string): Promise<ResourceCandidate[]> {
     const normalized = this.normalizeType(type);
-    const adapter = this.getAdapter(normalized);
-    if (!adapter) return [];
+    const adapter = await this.getOrResolveAdapter(normalized);
 
     const rows = await db
       .select()
@@ -78,6 +116,11 @@ export class ResourceRegistry {
         meta = JSON.parse(row.metadata);
       } catch {
         meta = {};
+      }
+
+      // Dedicated instances are never shared across tenants
+      if (meta.isDedicated) {
+        continue;
       }
 
       const status = await adapter.checkHealth(row.containerName);

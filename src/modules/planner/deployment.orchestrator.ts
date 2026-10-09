@@ -345,20 +345,35 @@ export class DeploymentOrchestrator {
       backingServiceTypes.add(service.serviceType);
     }
 
-    // Infer from environment variables if not already captured
+    // Infer from environment variables for any service (standard and custom)
     for (const v of plan.environmentVariables) {
-      if ((v.key === 'DATABASE_URL' || v.key.startsWith('POSTGRES_')) && !resolvedEnv['DATABASE_URL'] && !handledKeys.has('DATABASE_URL')) {
+      const keyUpper = v.key.toUpperCase();
+      if ((keyUpper === 'DATABASE_URL' || keyUpper.startsWith('POSTGRES_')) && !resolvedEnv['DATABASE_URL'] && !handledKeys.has('DATABASE_URL')) {
         backingServiceTypes.add('postgres');
-      } else if ((v.key === 'REDIS_URL' || v.key.startsWith('REDIS_')) && !resolvedEnv['REDIS_URL'] && !handledKeys.has('REDIS_URL')) {
+      } else if ((keyUpper === 'REDIS_URL' || keyUpper.startsWith('REDIS_')) && !resolvedEnv['REDIS_URL'] && !handledKeys.has('REDIS_URL')) {
         backingServiceTypes.add('redis');
-      } else if ((v.key === 'MYSQL_URL' || v.key.startsWith('MYSQL_')) && !resolvedEnv['MYSQL_URL'] && !handledKeys.has('MYSQL_URL')) {
+      } else if ((keyUpper === 'MYSQL_URL' || keyUpper.startsWith('MYSQL_') || keyUpper.startsWith('MARIADB_')) && !resolvedEnv['MYSQL_URL'] && !handledKeys.has('MYSQL_URL')) {
         backingServiceTypes.add('mysql');
-      } else if ((v.key === 'MONGODB_URI' || v.key.startsWith('MONGO_')) && !resolvedEnv['MONGODB_URI'] && !handledKeys.has('MONGODB_URI')) {
+      } else if ((keyUpper === 'MONGODB_URI' || keyUpper.startsWith('MONGO_')) && !resolvedEnv['MONGODB_URI'] && !handledKeys.has('MONGODB_URI')) {
         backingServiceTypes.add('mongodb');
-      } else if ((v.key === 'AMQP_URL' || v.key.startsWith('RABBITMQ_')) && !resolvedEnv['AMQP_URL'] && !handledKeys.has('AMQP_URL')) {
+      } else if ((keyUpper === 'AMQP_URL' || keyUpper.startsWith('RABBITMQ_')) && !resolvedEnv['AMQP_URL'] && !handledKeys.has('AMQP_URL')) {
         backingServiceTypes.add('rabbitmq');
-      } else if ((v.key === 'S3_ENDPOINT' || v.key.startsWith('AWS_')) && !resolvedEnv['S3_ENDPOINT'] && !handledKeys.has('S3_ENDPOINT')) {
+      } else if ((keyUpper === 'S3_ENDPOINT' || keyUpper.startsWith('AWS_')) && !resolvedEnv['S3_ENDPOINT'] && !handledKeys.has('S3_ENDPOINT')) {
         backingServiceTypes.add('minio');
+      } else if ((keyUpper.includes('KAFKA_') || keyUpper === 'KAFKA_BROKERS') && !resolvedEnv['KAFKA_BROKERS'] && !handledKeys.has('KAFKA_BROKERS')) {
+        backingServiceTypes.add('kafka');
+      } else if ((keyUpper.includes('NEO4J_') || keyUpper === 'NEO4J_URI') && !resolvedEnv['NEO4J_URI'] && !handledKeys.has('NEO4J_URI')) {
+        backingServiceTypes.add('neo4j');
+      } else if ((keyUpper.includes('CLICKHOUSE_') || keyUpper === 'CLICKHOUSE_URL') && !resolvedEnv['CLICKHOUSE_URL'] && !handledKeys.has('CLICKHOUSE_URL')) {
+        backingServiceTypes.add('clickhouse');
+      } else if ((keyUpper.includes('QDRANT_') || keyUpper === 'QDRANT_URL') && !resolvedEnv['QDRANT_URL'] && !handledKeys.has('QDRANT_URL')) {
+        backingServiceTypes.add('qdrant');
+      } else if (keyUpper.endsWith('_URL') || keyUpper.endsWith('_URI')) {
+        // Generic dynamic inference for arbitrary technologies: FOO_URL -> foo
+        const extracted = keyUpper.replace(/_URL$/, '').replace(/_URI$/, '').toLowerCase();
+        if (extracted && extracted.length > 2 && !resolvedEnv[v.key] && !handledKeys.has(v.key)) {
+          backingServiceTypes.add(extracted);
+        }
       }
     }
 
@@ -398,10 +413,22 @@ export class DeploymentOrchestrator {
         eventBus.emitLog({
           deploymentId: params.deploymentId,
           timestamp: Date.now(),
-          level: 'warn',
+          level: 'error',
           stage: 'deploy',
-          message: `Could not provision/wire ${serviceType} backing service: ${err.message}`,
+          message: `Required backing service [${serviceType}] provisioning failed: ${err.message}`,
         });
+
+        // Fail-closed policy: Do not launch broken application if required backing service failed
+        await db
+          .update(schema.deployments)
+          .set({ status: 'failed', updatedAt: Date.now() })
+          .where(eq(schema.deployments.id, params.deploymentId));
+
+        return {
+          status: 'failed',
+          liveUrl: '',
+          error: `Required backing service [${serviceType}] failed: ${err.message}`,
+        };
       }
     }
 

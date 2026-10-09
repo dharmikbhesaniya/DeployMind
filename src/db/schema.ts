@@ -108,6 +108,18 @@ export const resourceTenants = sqliteTable('resource_tenants', {
   createdAt: integer('created_at').notNull(),
 });
 
+export const serviceDefinitions = sqliteTable('service_definitions', {
+  id: text('id').primaryKey(),
+  serviceType: text('service_type').notNull().unique(),
+  version: text('version').notNull(),
+  category: text('category').notNull(), // 'sql' | 'nosql' | 'cache' | 'broker' | 'graph' | 'vector' | 'search' | 'object_storage' | 'custom'
+  definitionPayload: text('definition_payload').notNull(), // JSON of ServiceDefinition
+  provenance: text('provenance').notNull(), // 'builtin' | 'ai_generated' | 'operator_verified'
+  status: text('status').notNull().default('approved'), // 'candidate' | 'approved' | 'rejected'
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
 export const systemSettings = sqliteTable('system_settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
