@@ -105,7 +105,7 @@ export class ReconcilerService {
             }
           } else if (s.desiredState === 'stopped' && isRunning) {
             console.warn(`[Reconciler] Stopping container for stopped service "${s.name}"`);
-            await dockerService.stopAndRemove(s.containerId);
+            await dockerService.stopContainer(s.containerId);
             await db
               .update(schema.services)
               .set({ actualState: 'stopped', updatedAt: Date.now() })

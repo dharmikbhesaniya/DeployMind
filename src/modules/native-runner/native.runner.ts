@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { config } from '../../config/index.js';
 import { eventBus } from '../../core/events.js';
+import { buildSanitizedWorkloadEnv } from '../../core/workload-env.js';
 
 export interface NativeProcessInfo {
   projectId: string;
@@ -57,21 +58,9 @@ export class NativeRunner {
     this.copyProductionFiles(params.sourceDir, targetDir);
 
     // Ensure strict production environment with no codesign / no keychain access
-    const prodEnv: Record<string, string> = {
-      ...process.env,
-      ...params.env,
-      NODE_ENV: 'production',
+    const prodEnv: Record<string, string> = buildSanitizedWorkloadEnv(params.env, {
       PORT: params.port.toString(),
-      PYTHONUNBUFFERED: '1',
-      CI: 'true',
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false',
-      CSC_LINK: '',
-      CSC_KEY_PASSWORD: '',
-      CODE_SIGN_IDENTITY: '-',
-      CODE_SIGNING_REQUIRED: 'NO',
-      CODE_SIGNING_ALLOWED: 'NO',
-      ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: 'true',
-    };
+    });
 
     // Install production dependencies & run build if applicable
     await this.prepareProductionDependencies(params.deploymentId, targetDir, prodEnv, params.runtime, params.buildCommand);
@@ -406,19 +395,7 @@ server.listen(port, '0.0.0.0', () => {
 
   private runSubprocess(cwd: string, cmd: string, args: string[], env: Record<string, string>): Promise<void> {
     return new Promise((resolve, reject) => {
-      const mergedEnv = {
-        ...process.env,
-        ...env,
-        PATH: `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
-        CI: 'true',
-        CSC_IDENTITY_AUTO_DISCOVERY: 'false',
-        CSC_LINK: '',
-        CSC_KEY_PASSWORD: '',
-        CODE_SIGN_IDENTITY: '-',
-        CODE_SIGNING_REQUIRED: 'NO',
-        CODE_SIGNING_ALLOWED: 'NO',
-        ELECTRON_BUILDER_ALLOW_UNRESOLVED_DEPENDENCIES: 'true',
-      };
+      const mergedEnv = buildSanitizedWorkloadEnv(env);
       const p = spawn(cmd, args, { cwd, env: mergedEnv, stdio: 'ignore' });
       p.on('close', (code) => {
         if (code === 0) resolve();

@@ -141,13 +141,35 @@ export class DockerService {
     }
   }
 
-  // Safely remove a Docker volume
-  async removeVolume(volumeName: string): Promise<boolean> {
+  // Safely remove a Docker volume with ownership verification
+  async removeVolume(volumeName: string, expectedProjectId?: string): Promise<boolean> {
     try {
       const vol = this.docker.getVolume(volumeName);
-      await vol.remove({ force: true });
+      const inspect = await vol.inspect();
+
+      // Ownership Verification: Never remove unmanaged or system volumes
+      const isManaged = inspect.Labels?.['deploymind.managed'] === 'true';
+      if (!isManaged) {
+        console.warn(`[DockerService] Refusing to remove unmanaged volume: ${volumeName}`);
+        return false;
+      }
+
+      // If project ID is specified, verify ownership matches
+      if (expectedProjectId) {
+        const volumeProject = inspect.Labels?.['deploymind.project_id'];
+        if (volumeProject && volumeProject !== expectedProjectId) {
+          console.warn(
+            `[DockerService] Refusing to remove volume ${volumeName}: belongs to project ${volumeProject}, not ${expectedProjectId}`
+          );
+          return false;
+        }
+      }
+
+      await vol.remove();
       return true;
-    } catch {
+    } catch (err: any) {
+      if (err?.statusCode === 404) return true;
+      console.warn(`[DockerService] Could not safely remove volume ${volumeName}:`, err?.message || err);
       return false;
     }
   }
@@ -299,6 +321,7 @@ export class DockerService {
     volumes?: Array<{ hostVolumeName: string; containerPath: string; mode?: 'ro' | 'rw' }>;
     binds?: string[];
     networkAliases?: string[];
+    cmd?: string[];
   }): Promise<{ containerId: string; hostPort: number }> {
     await this.ensureNetwork();
 
@@ -347,6 +370,7 @@ export class DockerService {
     const container = await this.docker.createContainer({
       name: params.containerName,
       Image: params.imageTag,
+      Cmd: params.cmd,
       Env: envArray,
       Labels: labels,
       ExposedPorts: {
@@ -373,6 +397,35 @@ export class DockerService {
 
     await container.start();
     return { containerId: container.id, hostPort };
+  }
+
+  // Stop a running container without removing it (preserves container state & config)
+  async stopContainer(containerNameOrId: string): Promise<boolean> {
+    try {
+      const container = this.docker.getContainer(containerNameOrId);
+      const inspect = await container.inspect();
+      if (inspect.State.Running) {
+        await container.stop({ t: 5 });
+      }
+      return true;
+    } catch (err: any) {
+      if (err?.statusCode === 304 || err?.statusCode === 404) return true;
+      return false;
+    }
+  }
+
+  // Start an existing stopped container
+  async startExistingContainer(containerNameOrId: string): Promise<boolean> {
+    try {
+      const container = this.docker.getContainer(containerNameOrId);
+      const inspect = await container.inspect();
+      if (!inspect.State.Running) {
+        await container.start();
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // Stop and remove container

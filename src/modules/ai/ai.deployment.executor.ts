@@ -14,6 +14,7 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { eventBus, type DeploymentLogEvent } from '../../core/events.js';
 import { aiTaskEngine, type AITaskPlan } from './ai.task.engine.js';
+import { buildSanitizedWorkloadEnv } from '../../core/workload-env.js';
 
 export interface ExecutionResult {
   success: boolean;
@@ -64,18 +65,9 @@ export class AIDeploymentExecutor {
     // Override port if specified
     const effectivePort = params.port || taskPlan.port;
 
-    const prodEnv: Record<string, string> = {
-      ...process.env as Record<string, string>,
-      ...env,
-      NODE_ENV: 'production',
+    const prodEnv: Record<string, string> = buildSanitizedWorkloadEnv(env, {
       PORT: effectivePort.toString(),
-      PYTHONUNBUFFERED: '1',
-      CI: 'true',
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false',
-      CODE_SIGN_IDENTITY: '-',
-      CODE_SIGNING_REQUIRED: 'NO',
-      CODE_SIGNING_ALLOWED: 'NO',
-    };
+    });
 
     const execution: DeploymentExecution = { taskPlan };
 
@@ -252,11 +244,7 @@ export class AIDeploymentExecutor {
       const parts = this.parseCommand(command);
       let output = '';
 
-      const mergedEnv = {
-        ...process.env,
-        ...env,
-        PATH: `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
-      };
+      const mergedEnv = buildSanitizedWorkloadEnv(env);
 
       try {
         const proc = spawn(parts.cmd, parts.args, {
@@ -341,11 +329,7 @@ export class AIDeploymentExecutor {
     this.stopProcess(projectId);
 
     const parts = this.parseCommand(command);
-    const mergedEnv = {
-      ...process.env,
-      ...env,
-      PATH: `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
-    };
+    const mergedEnv = buildSanitizedWorkloadEnv(env);
 
     const logFile = path.join(cwd, 'app.log');
     const logStream = fs.createWriteStream(logFile, { flags: 'a' });

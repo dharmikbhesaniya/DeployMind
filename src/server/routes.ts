@@ -498,37 +498,63 @@ export async function registerRoutes(app: FastifyInstance) {
       try {
         if (body.action === 'stop' || body.action === 'restart') {
           if (s.containerId && !s.containerId.startsWith('pid_')) {
-            await dockerService.stopAndRemove(s.containerId).catch(() => {});
+            await dockerService.stopContainer(s.containerId);
+            await db
+              .update(schema.services)
+              .set({ desiredState: 'stopped', actualState: 'stopped', updatedAt: Date.now() })
+              .where(eq(schema.services.id, s.id));
             results.push({ service: s.name, action: 'stopped', containerId: s.containerId });
           } else if (s.containerId?.startsWith('pid_')) {
             aiDeploymentExecutor.stopProcess(proj.id);
+            await db
+              .update(schema.services)
+              .set({ desiredState: 'stopped', actualState: 'stopped', updatedAt: Date.now() })
+              .where(eq(schema.services.id, s.id));
             results.push({ service: s.name, action: 'stopped', pid: s.containerId });
           }
         }
 
         if (body.action === 'start' || body.action === 'restart') {
-          const sourceDir = path.join(config.dataDir, 'repos', proj.id);
-          if (fs.existsSync(sourceDir)) {
-            const taskPlan = await aiTaskEngine.synthesizeTaskPlan(sourceDir);
-            const resolvedEnv = await vaultService.resolveProjectVariables(proj.id);
-            const freePort = await dockerService.findAvailablePort(4000);
+          let resumedExisting = false;
+          if (s.containerId && !s.containerId.startsWith('pid_')) {
+            resumedExisting = await dockerService.startExistingContainer(s.containerId);
+            if (resumedExisting) {
+              await db
+                .update(schema.services)
+                .set({ desiredState: 'running', actualState: 'running', updatedAt: Date.now() })
+                .where(eq(schema.services.id, s.id));
+              results.push({ service: s.name, action: 'started', containerId: s.containerId });
+            }
+          }
 
-            const execution = await aiDeploymentExecutor.executeAIDrivenDeployment({
-              deploymentId: `toggle_${crypto.randomUUID()}`,
-              projectId: proj.id,
-              sourceDir,
-              env: resolvedEnv,
-              port: freePort,
-            });
+          if (!resumedExisting) {
+            const sourceDir = path.join(config.dataDir, 'repos', proj.id);
+            if (fs.existsSync(sourceDir)) {
+              const taskPlan = await aiTaskEngine.synthesizeTaskPlan(sourceDir);
+              const resolvedEnv = await vaultService.resolveProjectVariables(proj.id);
+              const freePort = await dockerService.findAvailablePort(4000);
 
-            if (execution.startResult) {
-              results.push({
-                service: s.name,
-                action: 'started',
-                pid: execution.startResult.pid,
-                port: execution.startResult.port,
-                command: execution.startResult.command,
+              const execution = await aiDeploymentExecutor.executeAIDrivenDeployment({
+                deploymentId: `toggle_${crypto.randomUUID()}`,
+                projectId: proj.id,
+                sourceDir,
+                env: resolvedEnv,
+                port: freePort,
               });
+
+              if (execution.startResult) {
+                await db
+                  .update(schema.services)
+                  .set({ desiredState: 'running', actualState: 'running', updatedAt: Date.now() })
+                  .where(eq(schema.services.id, s.id));
+                results.push({
+                  service: s.name,
+                  action: 'started',
+                  pid: execution.startResult.pid,
+                  port: execution.startResult.port,
+                  command: execution.startResult.command,
+                });
+              }
             }
           }
         }

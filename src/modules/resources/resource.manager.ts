@@ -1,18 +1,54 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { eq, and } from 'drizzle-orm';
 import { dockerService } from '../docker/docker.service.js';
 import { db, schema } from '../../db/index.js';
+import { config } from '../../config/index.js';
 
 export interface TenantCredentials {
   connectionUri: string;
   databaseName?: string;
   username?: string;
   password?: string;
+  keyPrefix?: string;
 }
 
 export class ResourceManager {
   readonly sharedPostgresName = 'deploymind-shared-postgres';
   readonly sharedRedisName = 'deploymind-shared-redis';
+
+  getPostgresAdminPassword(): string {
+    const keyPath = path.resolve(config.dataDir, 'postgres_admin.key');
+    try {
+      if (fs.existsSync(keyPath)) {
+        const secret = fs.readFileSync(keyPath, 'utf8').trim();
+        if (secret) return secret;
+      }
+      const newSecret = crypto.randomBytes(24).toString('hex');
+      fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+      fs.writeFileSync(keyPath, newSecret, { mode: 0o600 });
+      return newSecret;
+    } catch {
+      return 'deploymind_pg_sec_admin';
+    }
+  }
+
+  getRedisAdminPassword(): string {
+    const keyPath = path.resolve(config.dataDir, 'redis_admin.key');
+    try {
+      if (fs.existsSync(keyPath)) {
+        const secret = fs.readFileSync(keyPath, 'utf8').trim();
+        if (secret) return secret;
+      }
+      const newSecret = crypto.randomBytes(24).toString('hex');
+      fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+      fs.writeFileSync(keyPath, newSecret, { mode: 0o600 });
+      return newSecret;
+    } catch {
+      return 'deploymind_rd_sec_admin';
+    }
+  }
 
   // Ensures shared PostgreSQL cluster is available and tracked in DB
   async ensureSharedPostgres(): Promise<string> {
@@ -39,12 +75,13 @@ export class ResourceManager {
     if (!isDockerReady) return resourceId;
 
     try {
+      const adminPass = this.getPostgresAdminPassword();
       await dockerService.startContainer({
         containerName: this.sharedPostgresName,
         imageTag: 'postgres:16-alpine',
         env: {
           POSTGRES_USER: 'deploymind_admin',
-          POSTGRES_PASSWORD: 'deploymind_secure_pass',
+          POSTGRES_PASSWORD: adminPass,
           POSTGRES_DB: 'postgres',
         },
         exposedPort: 5432,
@@ -92,9 +129,11 @@ export class ResourceManager {
     if (!isDockerReady) return resourceId;
 
     try {
+      const redisAdminPass = this.getRedisAdminPassword();
       await dockerService.startContainer({
         containerName: this.sharedRedisName,
         imageTag: 'redis:7-alpine',
+        cmd: ['redis-server', '--requirepass', redisAdminPass, '--appendonly', 'yes'],
         env: {},
         exposedPort: 6379,
         memoryLimitMb: 256,
@@ -126,30 +165,44 @@ export class ResourceManager {
     const username = `usr_${cleanId}`;
     const password = crypto.randomBytes(16).toString('hex');
 
-    const sqlCommands = `
-      DO \\$\\$
-      BEGIN
-        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${username}') THEN
-          CREATE USER ${username} WITH PASSWORD '${password}';
-        END IF;
-      END
-      \\$\\$;
-      SELECT 'CREATE DATABASE ${dbName} OWNER ${username}'
-      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${dbName}')\\gexec
-    `;
+    const isRunning = await dockerService.isContainerRunning(this.sharedPostgresName);
+    if (isRunning) {
+      const sqlCommands = `
+        DO \\$\\$
+        BEGIN
+          IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${username}') THEN
+            CREATE USER ${username} WITH PASSWORD '${password}';
+          END IF;
+        END
+        \\$\\$;
+        SELECT 'CREATE DATABASE ${dbName} OWNER ${username}'
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${dbName}')\\gexec
+        REVOKE ALL ON DATABASE ${dbName} FROM PUBLIC;
+        GRANT ALL PRIVILEGES ON DATABASE ${dbName} TO ${username};
+      `;
 
-    try {
-      await dockerService.execCommand(this.sharedPostgresName, [
-        'psql',
-        '-U',
-        'deploymind_admin',
-        '-d',
-        'postgres',
-        '-c',
-        sqlCommands,
-      ]);
-    } catch (err) {
-      console.warn('[ResourceManager] Provisioning tenant in shared Postgres warning:', err);
+      try {
+        const execRes = await dockerService.execCommand(this.sharedPostgresName, [
+          'psql',
+          '-U',
+          'deploymind_admin',
+          '-d',
+          'postgres',
+          '-c',
+          sqlCommands,
+        ]);
+        if (execRes && execRes.exitCode !== 0) {
+          throw new Error(`psql returned exit code ${execRes.exitCode}: ${execRes.output}`);
+        }
+      } catch (err: any) {
+        console.error('[ResourceManager] Error provisioning tenant in shared Postgres:', err);
+        throw new Error(`Failed to provision isolated PostgreSQL tenant: ${err?.message || err}`);
+      }
+    } else if (process.env.NODE_ENV !== 'test') {
+      const isDockerReady = await dockerService.isAvailable();
+      if (isDockerReady) {
+        throw new Error(`Shared PostgreSQL container is not running. Cannot provision tenant.`);
+      }
     }
 
     const connectionUri = `postgresql://${username}:${password}@${this.sharedPostgresName}:5432/${dbName}`;
@@ -189,24 +242,27 @@ export class ResourceManager {
     const dbName = `db_${cleanId}`;
     const username = `usr_${cleanId}`;
 
-    const teardownCommands = `
-      SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${dbName}';
-      DROP DATABASE IF EXISTS ${dbName};
-      DROP USER IF EXISTS ${username};
-    `;
+    const isRunning = await dockerService.isContainerRunning(this.sharedPostgresName);
+    if (isRunning) {
+      const teardownCommands = `
+        SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${dbName}';
+        DROP DATABASE IF EXISTS ${dbName};
+        DROP USER IF EXISTS ${username};
+      `;
 
-    try {
-      await dockerService.execCommand(this.sharedPostgresName, [
-        'psql',
-        '-U',
-        'deploymind_admin',
-        '-d',
-        'postgres',
-        '-c',
-        teardownCommands,
-      ]);
-    } catch (err) {
-      console.warn('[ResourceManager] Deprovisioning tenant in shared Postgres warning:', err);
+      try {
+        await dockerService.execCommand(this.sharedPostgresName, [
+          'psql',
+          '-U',
+          'deploymind_admin',
+          '-d',
+          'postgres',
+          '-c',
+          teardownCommands,
+        ]);
+      } catch (err) {
+        console.warn('[ResourceManager] Deprovisioning tenant in shared Postgres warning:', err);
+      }
     }
 
     await db
@@ -220,22 +276,38 @@ export class ResourceManager {
     const cleanId = projectId.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
     const username = `usr_${cleanId}`;
     const password = crypto.randomBytes(16).toString('hex');
+    const keyPrefix = `proj_${cleanId}:`;
 
-    // Create Redis 7 ACL user with key pattern constraint
-    try {
-      await dockerService.execCommand(this.sharedRedisName, [
-        'redis-cli',
-        'ACL',
-        'SETUSER',
-        username,
-        'on',
-        `>${password}`,
-        `~proj_${cleanId}:*`,
-        '+@all',
-        '-@dangerous',
-      ]);
-    } catch {
-      // Non-fatal if Redis ACL is disabled
+    const isRunning = await dockerService.isContainerRunning(this.sharedRedisName);
+    if (isRunning) {
+      const redisAdminPass = this.getRedisAdminPassword();
+      try {
+        const execRes = await dockerService.execCommand(this.sharedRedisName, [
+          'redis-cli',
+          '-a',
+          redisAdminPass,
+          'ACL',
+          'SETUSER',
+          username,
+          'on',
+          `>${password}`,
+          `~${keyPrefix}*`,
+          `~${cleanId}:*`,
+          '+@all',
+          '-@dangerous',
+        ]);
+        if (execRes && execRes.exitCode !== 0) {
+          throw new Error(`redis-cli exited with code ${execRes.exitCode}: ${execRes.output}`);
+        }
+      } catch (err: any) {
+        console.error('[ResourceManager] Error provisioning tenant in shared Redis:', err);
+        throw new Error(`Failed to configure isolated Redis ACL for tenant: ${err?.message || err}`);
+      }
+    } else if (process.env.NODE_ENV !== 'test') {
+      const isDockerReady = await dockerService.isAvailable();
+      if (isDockerReady) {
+        throw new Error(`Shared Redis container is not running. Cannot provision tenant.`);
+      }
     }
 
     const connectionUri = `redis://${username}:${password}@${this.sharedRedisName}:6379`;
@@ -256,7 +328,7 @@ export class ResourceManager {
       projectId,
       databaseName: `proj_${cleanId}`,
       username,
-      encryptedCredentials: JSON.stringify({ connectionUri }),
+      encryptedCredentials: JSON.stringify({ connectionUri, keyPrefix }),
       createdAt: Date.now(),
     });
 
@@ -264,6 +336,7 @@ export class ResourceManager {
       connectionUri,
       username,
       password,
+      keyPrefix,
     };
   }
 
@@ -272,15 +345,21 @@ export class ResourceManager {
     const cleanId = projectId.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
     const username = `usr_${cleanId}`;
 
-    try {
-      await dockerService.execCommand(this.sharedRedisName, [
-        'redis-cli',
-        'ACL',
-        'DELUSER',
-        username,
-      ]);
-    } catch {
-      // Non-fatal
+    const isRunning = await dockerService.isContainerRunning(this.sharedRedisName);
+    if (isRunning) {
+      const redisAdminPass = this.getRedisAdminPassword();
+      try {
+        await dockerService.execCommand(this.sharedRedisName, [
+          'redis-cli',
+          '-a',
+          redisAdminPass,
+          'ACL',
+          'DELUSER',
+          username,
+        ]);
+      } catch {
+        // Non-fatal
+      }
     }
 
     await db

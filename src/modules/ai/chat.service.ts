@@ -4,6 +4,7 @@
  * Delivers Claude Code-style interactive desktop experience in natural language.
  */
 
+import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { dockerService } from '../docker/docker.service.js';
@@ -155,19 +156,30 @@ export class AIChatService {
         const target = intent.entities.serviceName || '';
         const serv = services.find((s) => s.name.toLowerCase().includes(target.toLowerCase()));
         if (serv?.containerId && !serv.containerId.startsWith('pid_')) {
-          await dockerService.startContainer({
-            containerName: serv.containerId,
-            imageTag: serv.imageTag,
-            env: {},
-            exposedPort: serv.internalPort,
-          });
+          const started = await dockerService.startExistingContainer(serv.containerId);
+          if (!started) {
+            await dockerService.startContainer({
+              containerName: serv.containerId,
+              imageTag: serv.imageTag,
+              env: {},
+              exposedPort: serv.internalPort,
+            });
+          }
+          await db
+            .update(schema.services)
+            .set({ desiredState: 'running', actualState: 'running', updatedAt: Date.now() })
+            .where(eq(schema.services.id, serv.id));
         }
         actionResult = { action: 'START_SERVICE', success: true, output: `Started ${target}` };
       } else if (intent.choice === 'STOP_SERVICE') {
         const target = intent.entities.serviceName || '';
         const serv = services.find((s) => s.name.toLowerCase().includes(target.toLowerCase()));
         if (serv?.containerId && !serv.containerId.startsWith('pid_')) {
-          await dockerService.stopAndRemove(serv.containerId);
+          await dockerService.stopContainer(serv.containerId);
+          await db
+            .update(schema.services)
+            .set({ desiredState: 'stopped', actualState: 'stopped', updatedAt: Date.now() })
+            .where(eq(schema.services.id, serv.id));
         }
         actionResult = { action: 'STOP_SERVICE', success: true, output: `Stopped ${target}` };
       } else if (intent.choice === 'SYSTEM_STATUS') {
@@ -283,6 +295,32 @@ export class AIChatService {
               accessMode,
             };
 
+            const planHash = crypto
+              .createHash('sha256')
+              .update(JSON.stringify(plan))
+              .digest('hex');
+
+            await db
+              .delete(schema.pendingApprovals)
+              .where(eq(schema.pendingApprovals.id, promptId));
+
+            await db.insert(schema.pendingApprovals).values({
+              id: promptId,
+              action: 'DEPLOY_CONFIRM',
+              target: repoUrl,
+              planHash,
+              details: JSON.stringify({
+                deploymentId,
+                projectId,
+                plan,
+                missingVars,
+                requiredTools,
+              }),
+              status: 'pending',
+              createdAt: Date.now(),
+              expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+            });
+
             pendingPrompts.set(promptId, {
               action: 'DEPLOY_CONFIRM',
               target: repoUrl,
@@ -389,20 +427,68 @@ export class AIChatService {
       enableAutoMode?: boolean;
     }
   ): Promise<{ success: boolean; message: string; deploymentStream?: any }> {
+    // Check durable pending approvals in SQLite
+    const [durableApproval] = await db
+      .select()
+      .from(schema.pendingApprovals)
+      .where(eq(schema.pendingApprovals.id, promptId));
+
     const prompt = pendingPrompts.get(promptId);
-    if (!prompt) {
+    pendingPrompts.delete(promptId);
+
+    if (!durableApproval && !prompt) {
       return { success: false, message: 'Interactive prompt has expired or was already handled.' };
     }
 
-    pendingPrompts.delete(promptId);
+    const action = durableApproval?.action || prompt?.action;
+    const target = durableApproval?.target || prompt?.target || '';
+    const details = durableApproval ? JSON.parse(durableApproval.details) : prompt?.details;
+
+    if (durableApproval) {
+      if (durableApproval.status !== 'pending' || durableApproval.expiresAt < Date.now()) {
+        return { success: false, message: 'Interactive prompt has expired or was already handled.' };
+      }
+    }
 
     if (!approved) {
-      return { success: true, message: `Action "${prompt.action}" was cancelled by user.` };
+      if (durableApproval) {
+        await db
+          .update(schema.pendingApprovals)
+          .set({ status: 'rejected' })
+          .where(eq(schema.pendingApprovals.id, promptId));
+      }
+      return { success: true, message: `Action "${action}" was cancelled by user.` };
+    }
+
+    // Verify cryptographic immutable plan hash
+    if (durableApproval?.planHash && details?.plan) {
+      const currentPlanHash = crypto
+        .createHash('sha256')
+        .update(JSON.stringify(details.plan))
+        .digest('hex');
+
+      if (currentPlanHash !== durableApproval.planHash) {
+        await db
+          .update(schema.pendingApprovals)
+          .set({ status: 'rejected' })
+          .where(eq(schema.pendingApprovals.id, promptId));
+        return {
+          success: false,
+          message: 'Plan integrity failure: Deployment plan was modified after approval was requested (hash mismatch).',
+        };
+      }
+    }
+
+    if (durableApproval) {
+      await db
+        .update(schema.pendingApprovals)
+        .set({ status: 'approved' })
+        .where(eq(schema.pendingApprovals.id, promptId));
     }
 
     // Handle pre-deployment configuration and tool approval
-    if (prompt.action === 'DEPLOY_CONFIRM') {
-      const { deploymentId, projectId, plan } = prompt.details;
+    if (action === 'DEPLOY_CONFIRM') {
+      const { deploymentId, projectId, plan } = details;
 
       if (options?.enableAutoMode) {
         await settingsService.setAccessMode('AUTO');
@@ -458,15 +544,15 @@ export class AIChatService {
         message: `🚀 Deployment approved! Starting autonomous build and ingress for ${plan.projectName}...`,
         deploymentStream: {
           deploymentId,
-          repoUrl: prompt.target,
+          repoUrl: target,
           subdomain: plan.suggestedSubdomain,
         },
       };
     }
 
     // Execute approved destructive action (DELETE_PROJECT)
-    if (prompt.action === 'DELETE_PROJECT') {
-      const targetName = prompt.target.toLowerCase();
+    if (action === 'DELETE_PROJECT') {
+      const targetName = target.toLowerCase();
       const [proj] = await db.select().from(schema.projects).where(eq(schema.projects.slug, targetName));
 
       if (proj) {
@@ -486,7 +572,7 @@ export class AIChatService {
       }
     }
 
-    return { success: true, message: `Approved action "${prompt.action}" completed successfully.` };
+    return { success: true, message: `Approved action "${action}" completed successfully.` };
   }
 }
 

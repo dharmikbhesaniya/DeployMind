@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { lt } from 'drizzle-orm';
+import { lt, eq } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { config } from '../../config/index.js';
 
@@ -36,12 +36,12 @@ export class RetentionManager {
             .set({
               logs: `[Log Retention Policy] Truncated after ${retentionDays} days. Status was: ${d.status}`,
             })
-            .where(lt(schema.deployments.id, d.id));
+            .where(eq(schema.deployments.id, d.id));
           prunedDeploymentLogs++;
         }
       }
-    } catch {
-      // Non-fatal
+    } catch (err: any) {
+      console.warn('[RetentionManager] Warning truncating deployment logs:', err?.message || err);
     }
 
     // 2. Clean up resolved incidents older than retention window
@@ -53,12 +53,12 @@ export class RetentionManager {
 
       for (const inc of oldIncidents) {
         if (inc.resolved) {
-          await db.delete(schema.incidents).where(lt(schema.incidents.id, inc.id));
+          await db.delete(schema.incidents).where(eq(schema.incidents.id, inc.id));
           prunedIncidents++;
         }
       }
-    } catch {
-      // Non-fatal
+    } catch (err: any) {
+      console.warn('[RetentionManager] Warning cleaning old incidents:', err?.message || err);
     }
 
     // 3. Clean temporary repo clone checkouts

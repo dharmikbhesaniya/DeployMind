@@ -136,3 +136,14 @@ export const incidents = sqliteTable('incidents', {
   resolvedAt: integer('resolved_at'),
 });
 
+export const pendingApprovals = sqliteTable('pending_approvals', {
+  id: text('id').primaryKey(),
+  action: text('action').notNull(),
+  target: text('target').notNull(),
+  planHash: text('plan_hash'),
+  details: text('details').notNull(), // JSON payload
+  status: text('status').notNull().default('pending'), // 'pending' | 'approved' | 'rejected' | 'expired'
+  createdAt: integer('created_at').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+});
+

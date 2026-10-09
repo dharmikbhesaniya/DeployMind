@@ -130,6 +130,17 @@ export function initDatabase() {
       created_at INTEGER NOT NULL,
       resolved_at INTEGER
     );
+
+    CREATE TABLE IF NOT EXISTS pending_approvals (
+      id TEXT PRIMARY KEY,
+      action TEXT NOT NULL,
+      target TEXT NOT NULL,
+      plan_hash TEXT,
+      details TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
   `);
 }
 

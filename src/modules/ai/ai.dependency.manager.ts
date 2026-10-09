@@ -16,6 +16,7 @@ import { spawn } from 'node:child_process';
 import { eventBus } from '../../core/events.js';
 import { settingsService } from '../settings/settings.service.js';
 import type { AITaskPlan } from './ai.task.engine.js';
+import { buildSanitizedWorkloadEnv } from '../../core/workload-env.js';
 
 export interface DependencyCheck {
   name: string;
@@ -376,12 +377,10 @@ export class AIDependencyManager {
       const proc = spawn(parts[0], parts.slice(1), {
         shell: true,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          PATH: `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
+        env: buildSanitizedWorkloadEnv({
           NONINTERACTIVE: '1',
           DEBIAN_FRONTEND: 'noninteractive',
-        },
+        }),
       });
 
       let output = '';
@@ -427,10 +426,7 @@ export class AIDependencyManager {
       const proc = spawn(checkCommand.split(' ')[0], checkCommand.split(' ').slice(1), {
         shell: true,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          PATH: `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ''}`,
-        },
+        env: buildSanitizedWorkloadEnv(),
       });
 
       let output = '';
