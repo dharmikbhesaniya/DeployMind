@@ -24,6 +24,7 @@ import { incidentService } from '../modules/health/incident.service.js';
 import { aiTaskEngine } from '../modules/ai/ai.task.engine.js';
 import { aiDeploymentExecutor } from '../modules/ai/ai.deployment.executor.js';
 import { aiDependencyManager } from '../modules/ai/ai.dependency.manager.js';
+import { getAdminToken, verifyAdminToken } from '../core/auth.js';
 
 export async function registerRoutes(app: FastifyInstance) {
   // System status check
@@ -42,6 +43,52 @@ export async function registerRoutes(app: FastifyInstance) {
         connected: isProxy,
       },
     };
+  });
+
+  // Auth Session Bootstrap & Verification (Web UI & Control Plane)
+  app.get('/api/auth/session', async (req, reply) => {
+    const isLocalhost =
+      req.ip === '127.0.0.1' ||
+      req.ip === '::1' ||
+      req.hostname.startsWith('localhost') ||
+      req.hostname.startsWith('127.0.0.1');
+
+    const authHeader = req.headers.authorization;
+    const currentToken = getAdminToken();
+
+    // If on loopback/localhost or valid token presented, issue session
+    if (isLocalhost) {
+      reply.header('Set-Cookie', `deploymind_token=${currentToken}; Path=/; HttpOnly; SameSite=Lax`);
+      return {
+        authenticated: true,
+        token: currentToken,
+        mode: 'local',
+      };
+    }
+
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const candidate = authHeader.slice(7).trim();
+      if (verifyAdminToken(candidate)) {
+        reply.header('Set-Cookie', `deploymind_token=${candidate}; Path=/; HttpOnly; SameSite=Lax`);
+        return { authenticated: true, token: candidate, mode: 'remote' };
+      }
+    }
+
+    return reply.status(401).send({ authenticated: false, message: 'Valid admin token required.' });
+  });
+
+  app.post('/api/auth/verify', async (req, reply) => {
+    const body = (req.body as any) || {};
+    const candidate =
+      body.token ||
+      (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7).trim() : '');
+
+    if (verifyAdminToken(candidate)) {
+      reply.header('Set-Cookie', `deploymind_token=${candidate}; Path=/; HttpOnly; SameSite=Lax`);
+      return { authenticated: true, token: candidate };
+    }
+
+    return reply.status(401).send({ authenticated: false, message: 'Invalid administrative token.' });
   });
 
   // System Settings (Access mode ASK vs AUTO)

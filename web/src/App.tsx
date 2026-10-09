@@ -315,7 +315,23 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchData();
+    const initAndFetch = async () => {
+      let token = localStorage.getItem('deploymind_admin_token');
+      if (!token) {
+        try {
+          const sRes = await fetch(`${API_BASE}/api/auth/session`, { credentials: 'include' });
+          if (sRes.ok) {
+            const sData = await sRes.json();
+            if (sData.token) {
+              localStorage.setItem('deploymind_admin_token', sData.token);
+            }
+          }
+        } catch {}
+      }
+      await fetchData();
+    };
+
+    initAndFetch();
     const interval = setInterval(fetchData, 6000);
     return () => clearInterval(interval);
   }, []);

@@ -64,12 +64,14 @@ export function verifyAdminToken(candidate: string | undefined | null): boolean 
 export async function authGuard(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const url = req.url.split('?')[0];
 
-  // 1. Exempt public health, status, webhooks, and static frontend routes
+  // 1. Exempt public health, status, session bootstrap, webhooks, and static frontend routes
   if (
     url === '/health' ||
     url === '/api/health' ||
     url === '/api/system/health' ||
     url === '/api/system/status' ||
+    url === '/api/auth/session' ||
+    url === '/api/auth/verify' ||
     url.startsWith('/api/webhooks/') ||
     !url.startsWith('/api/')
   ) {
@@ -84,7 +86,7 @@ export async function authGuard(req: FastifyRequest, reply: FastifyReply): Promi
     return;
   }
 
-  // 3. Extract candidate token from Authorization header, x-api-key, or query param
+  // 3. Extract candidate token from Authorization header, x-api-key, cookie, or query param
   let token: string | undefined;
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -93,6 +95,11 @@ export async function authGuard(req: FastifyRequest, reply: FastifyReply): Promi
     token = String(req.headers['x-api-key']).trim();
   } else if ((req.query as any)?.token) {
     token = String((req.query as any).token).trim();
+  } else if (req.headers.cookie) {
+    const match = req.headers.cookie.match(/(?:deploymind_token|deploymind_admin_token)=([^;]+)/);
+    if (match) {
+      token = match[1].trim();
+    }
   }
 
   if (!token || !verifyAdminToken(token)) {
