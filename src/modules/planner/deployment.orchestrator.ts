@@ -335,6 +335,72 @@ export class DeploymentOrchestrator {
     // 2. Fetch all decrypted variables
     const resolvedEnv = await vaultService.resolveProjectVariables(projectId);
 
+    // 2b. Automatically provision and wire backing services (PostgreSQL, Redis) on the Docker network
+    // If a service/DB is needed and the user didn't supply an external connection string:
+    const needsPostgres =
+      !handledKeys.has('DATABASE_URL') &&
+      ((plan.requiredBackingServices || []).some((s) => s.serviceType === 'postgres') ||
+        plan.environmentVariables.some((v) => v.key === 'DATABASE_URL' || v.key.startsWith('POSTGRES_')));
+
+    if (needsPostgres && !resolvedEnv['DATABASE_URL']) {
+      try {
+        const pgTenant = await resourceManager.provisionPostgresTenant(projectId);
+        resolvedEnv['DATABASE_URL'] = pgTenant.connectionUri;
+        resolvedEnv['POSTGRES_URL'] = pgTenant.connectionUri;
+        resolvedEnv['PGHOST'] = 'deploymind-shared-postgres';
+        resolvedEnv['PGPORT'] = '5432';
+        resolvedEnv['PGUSER'] = pgTenant.username || '';
+        resolvedEnv['PGPASSWORD'] = pgTenant.password || '';
+        resolvedEnv['PGDATABASE'] = pgTenant.databaseName || '';
+
+        eventBus.emitLog({
+          deploymentId: params.deploymentId,
+          timestamp: Date.now(),
+          level: 'info',
+          stage: 'deploy',
+          message: `[Docker Network] Attached PostgreSQL tenant (${pgTenant.databaseName}) to deploymind-net at deploymind-shared-postgres:5432`,
+        });
+      } catch (err: any) {
+        eventBus.emitLog({
+          deploymentId: params.deploymentId,
+          timestamp: Date.now(),
+          level: 'warn',
+          stage: 'deploy',
+          message: `Could not provision PostgreSQL tenant: ${err.message}`,
+        });
+      }
+    }
+
+    const needsRedis =
+      !handledKeys.has('REDIS_URL') &&
+      ((plan.requiredBackingServices || []).some((s) => s.serviceType === 'redis') ||
+        plan.environmentVariables.some((v) => v.key === 'REDIS_URL' || v.key.startsWith('REDIS_')));
+
+    if (needsRedis && !resolvedEnv['REDIS_URL']) {
+      try {
+        const rdTenant = await resourceManager.provisionRedisTenant(projectId);
+        resolvedEnv['REDIS_URL'] = rdTenant.connectionUri;
+        resolvedEnv['REDIS_HOST'] = 'deploymind-shared-redis';
+        resolvedEnv['REDIS_PORT'] = '6379';
+
+        eventBus.emitLog({
+          deploymentId: params.deploymentId,
+          timestamp: Date.now(),
+          level: 'info',
+          stage: 'deploy',
+          message: `[Docker Network] Attached Redis tenant to deploymind-net at deploymind-shared-redis:6379`,
+        });
+      } catch (err: any) {
+        eventBus.emitLog({
+          deploymentId: params.deploymentId,
+          timestamp: Date.now(),
+          level: 'warn',
+          stage: 'deploy',
+          message: `Could not provision Redis tenant: ${err.message}`,
+        });
+      }
+    }
+
     // 3. Start container or native host runner
     const containerName = `app_${projectId.replace(/[^a-zA-Z0-9]/g, '_')}`;
     const serviceId = `srv_${crypto.randomUUID()}`;
@@ -392,6 +458,11 @@ export class DeploymentOrchestrator {
         });
 
         try {
+          const projectVolumes = (plan.volumes || []).map((v) => ({
+            hostVolumeName: v.hostVolumeName || `vol_${projectId.replace(/[^a-zA-Z0-9]/g, '_')}_data`,
+            containerPath: v.containerPath,
+          }));
+
           const res = await dockerService.startContainer({
             containerName,
             imageTag,
@@ -401,6 +472,11 @@ export class DeploymentOrchestrator {
             cpuLimit: 1,
             projectId,
             serviceId,
+            volumes: projectVolumes,
+            networkAliases: [
+              plan.projectName.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+              `app-${projectId.slice(0, 8)}`,
+            ],
           });
           containerId = res.containerId;
           activePort = res.hostPort;
@@ -459,11 +535,25 @@ export class DeploymentOrchestrator {
       }
 
       // 3. Execute AI-driven deployment pipeline (install → migrate → build → start)
+      const hostEnv = { ...resolvedEnv };
+      if (hostEnv['DATABASE_URL']) {
+        hostEnv['DATABASE_URL'] = hostEnv['DATABASE_URL'].replace('@deploymind-shared-postgres:', '@127.0.0.1:');
+      }
+      if (hostEnv['PGHOST'] === 'deploymind-shared-postgres') {
+        hostEnv['PGHOST'] = '127.0.0.1';
+      }
+      if (hostEnv['REDIS_URL']) {
+        hostEnv['REDIS_URL'] = hostEnv['REDIS_URL'].replace('@deploymind-shared-redis:', '@127.0.0.1:');
+      }
+      if (hostEnv['REDIS_HOST'] === 'deploymind-shared-redis') {
+        hostEnv['REDIS_HOST'] = '127.0.0.1';
+      }
+
       const aiExecution = await aiDeploymentExecutor.executeAIDrivenDeployment({
         deploymentId: params.deploymentId,
         projectId,
         sourceDir,
-        env: resolvedEnv,
+        env: hostEnv,
         port: activePort,
         runMigrations: Boolean(plan.migrationCommand || taskPlan.migrationCommand),
       });
@@ -667,11 +757,20 @@ export class DeploymentOrchestrator {
       }
     }
 
-    // 3. Deprovision shared resource tenants if data deletion requested
+    // 3. Deprovision shared resource tenants & Docker volumes if data deletion requested
     if (options.deleteData) {
       await resourceManager.deprovisionPostgresTenant(projectId).catch(() => {});
       await resourceManager.deprovisionRedisTenant(projectId).catch(() => {});
       freedResources.push('PostgreSQL & Redis tenant allocations');
+
+      // Clean up project Docker volumes
+      const projectVolumes = await dockerService.listVolumes(projectId).catch(() => []);
+      for (const vol of projectVolumes) {
+        await dockerService.removeVolume(vol.name).catch(() => {});
+        freedResources.push(`Docker volume ${vol.name}`);
+      }
+      const defaultVolName = `vol_${projectId.replace(/[^a-zA-Z0-9]/g, '_')}_data`;
+      await dockerService.removeVolume(defaultVolName).catch(() => {});
 
       const repoDir = path.join(config.dataDir, 'repos', projectId);
       if (fs.existsSync(repoDir)) {

@@ -49,6 +49,13 @@ export class ResourceManager {
         },
         exposedPort: 5432,
         memoryLimitMb: 512,
+        volumes: [
+          {
+            hostVolumeName: 'deploymind-postgres-data',
+            containerPath: '/var/lib/postgresql/data',
+          },
+        ],
+        networkAliases: ['postgres', 'shared-postgres', 'db'],
         labels: {
           'deploymind.managed': 'true',
           'deploymind.resource_type': 'shared_postgres',
@@ -91,6 +98,13 @@ export class ResourceManager {
         env: {},
         exposedPort: 6379,
         memoryLimitMb: 256,
+        volumes: [
+          {
+            hostVolumeName: 'deploymind-redis-data',
+            containerPath: '/data',
+          },
+        ],
+        networkAliases: ['redis', 'shared-redis'],
         labels: {
           'deploymind.managed': 'true',
           'deploymind.resource_type': 'shared_redis',

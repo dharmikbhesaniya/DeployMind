@@ -117,6 +117,61 @@ export class DockerService {
     }
   }
 
+  // Ensure a Docker named volume exists
+  async ensureVolume(volumeName: string, labels: Record<string, string> = {}): Promise<string> {
+    try {
+      const vol = this.docker.getVolume(volumeName);
+      await vol.inspect();
+      return volumeName;
+    } catch {
+      try {
+        await this.docker.createVolume({
+          Name: volumeName,
+          Driver: 'local',
+          Labels: {
+            'deploymind.managed': 'true',
+            ...labels,
+          },
+        });
+        return volumeName;
+      } catch (err: any) {
+        if (err.statusCode === 409) return volumeName;
+        throw err;
+      }
+    }
+  }
+
+  // Safely remove a Docker volume
+  async removeVolume(volumeName: string): Promise<boolean> {
+    try {
+      const vol = this.docker.getVolume(volumeName);
+      await vol.remove({ force: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // List managed volumes, optionally filtered by project
+  async listVolumes(projectId?: string): Promise<Array<{ name: string; labels: Record<string, string> }>> {
+    try {
+      const res = await this.docker.listVolumes();
+      const vols = res.Volumes || [];
+      return vols
+        .filter((v: any) => {
+          if (!v.Labels?.['deploymind.managed']) return false;
+          if (projectId && v.Labels?.['deploymind.project_id'] !== projectId) return false;
+          return true;
+        })
+        .map((v: any) => ({
+          name: v.Name,
+          labels: v.Labels || {},
+        }));
+    } catch {
+      return [];
+    }
+  }
+
   // Ensure DeployMind Caddy reverse proxy container is running on deploymind-net
   async ensureCaddyContainer(): Promise<boolean> {
     try {
@@ -229,7 +284,7 @@ export class DockerService {
     return startPort;
   }
 
-  // Create and start application container with ownership labels and localhost isolation
+  // Create and start application container with ownership labels, volumes, and network aliases
   async startContainer(params: {
     containerName: string;
     imageTag: string;
@@ -241,8 +296,24 @@ export class DockerService {
     projectId?: string;
     serviceId?: string;
     labels?: Record<string, string>;
+    volumes?: Array<{ hostVolumeName: string; containerPath: string; mode?: 'ro' | 'rw' }>;
+    binds?: string[];
+    networkAliases?: string[];
   }): Promise<{ containerId: string; hostPort: number }> {
     await this.ensureNetwork();
+
+    // Ensure all requested named volumes exist
+    const volumeBinds: string[] = [];
+    if (params.volumes && params.volumes.length > 0) {
+      for (const vol of params.volumes) {
+        await this.ensureVolume(vol.hostVolumeName, {
+          'deploymind.project_id': params.projectId || '',
+          'deploymind.service_id': params.serviceId || '',
+        });
+        volumeBinds.push(`${vol.hostVolumeName}:${vol.containerPath}:${vol.mode || 'rw'}`);
+      }
+    }
+    const allBinds = [...(params.binds || []), ...volumeBinds];
 
     // Check if container already exists and stop it
     try {
@@ -286,9 +357,17 @@ export class DockerService {
         PortBindings: {
           [`${params.exposedPort}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: hostPort.toString() }],
         },
+        Binds: allBinds.length > 0 ? allBinds : undefined,
         RestartPolicy: { Name: 'unless-stopped' },
         Memory: memoryBytes,
         NanoCpus: nanoCpus,
+      },
+      NetworkingConfig: {
+        EndpointsConfig: {
+          [this.networkName]: {
+            Aliases: [params.containerName, ...(params.networkAliases || [])],
+          },
+        },
       },
     });
 
