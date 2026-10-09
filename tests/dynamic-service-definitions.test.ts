@@ -245,7 +245,9 @@ describe('Dynamic Service Definitions & Autonomous Multi-Tenant Infrastructure (
       // Step 1: Candidate status blocks execution at policy boundary
       const unapprovedPlan = await resourcePlanner.evaluateRequirement({ type: 'cassandra' });
       expect(unapprovedPlan.decision.action).toBe('reject');
-      expect(unapprovedPlan.decision.reason).toContain('candidate');
+      if (unapprovedPlan.decision.action === 'reject') {
+        expect(unapprovedPlan.decision.reason).toContain('candidate');
+      }
 
       // Step 2: Operator reviews and approves definition
       const approvedDef = await serviceDefinitionGenerator.approveDefinition('cassandra');
@@ -493,7 +495,9 @@ describe('Dynamic Service Definitions & Autonomous Multi-Tenant Infrastructure (
 
       const plan = await resourcePlanner.evaluateRequirement({ type: 'cassandra' });
       expect(plan.decision.action).toBe('reject');
-      expect(plan.decision.reason).toContain('rejected and forbidden');
+      if (plan.decision.action === 'reject') {
+        expect(plan.decision.reason).toContain('rejected and forbidden');
+      }
     });
   });
 });

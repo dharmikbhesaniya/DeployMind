@@ -42,8 +42,8 @@ export interface ResourceTenantBinding {
 }
 
 export type ResourceDecision =
-  | { action: 'reuse'; resourceId: string; binding?: ResourceTenantBinding }
-  | { action: 'provision'; requirement: ResourceRequirement }
+  | { action: 'reuse'; resourceId: string; binding?: ResourceTenantBinding; reason?: string }
+  | { action: 'provision'; requirement: ResourceRequirement; reason?: string }
   | { action: 'ask_user'; reason: string }
   | { action: 'reject'; reason: string };
 
