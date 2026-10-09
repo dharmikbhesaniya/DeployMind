@@ -673,9 +673,16 @@ export const AIChatConsole: React.FC<AIChatConsoleProps> = ({ apiBase, wsBase, o
     setLoading(true);
 
     try {
+      const adminToken = localStorage.getItem('deploymind_admin_token');
+      const chatHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (adminToken) {
+        chatHeaders['Authorization'] = `Bearer ${adminToken}`;
+      }
+
       const res = await fetch(`${apiBase}/api/ai/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: chatHeaders,
+        credentials: 'include',
         body: JSON.stringify({
           message: textToSend.trim(),
           history: currentMessages.map((m) => ({ role: m.role, content: m.content })),
