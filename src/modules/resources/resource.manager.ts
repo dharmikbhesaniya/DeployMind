@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { dockerService } from '../docker/docker.service.js';
 import { db, schema } from '../../db/index.js';
 import { resourceRegistry } from './resource.registry.js';
@@ -20,8 +20,6 @@ export interface TenantCredentials {
 export class ResourceManager {
   readonly sharedPostgresName = 'deploymind-shared-postgres';
   readonly sharedRedisName = 'deploymind-shared-redis';
-  private dynamicPgPass: string | null = null;
-  private dynamicRedisPass: string | null = null;
 
   // Resolves the persistent AES-256 Vault admin credential for any backing service
   async resolveAdminPassword(resourceType: string): Promise<string> {
@@ -34,35 +32,13 @@ export class ResourceManager {
     );
   }
 
-  // Non-hardcoded cryptographically secure admin credential getters (persisted in Vault)
-  getPostgresAdminPassword(): string {
-    if (!this.dynamicPgPass) {
-      this.dynamicPgPass = crypto.randomBytes(24).toString('hex');
-      vaultService
-        .createCredential({
-          keyName: 'ADMIN_SECRET_DEPLOYMIND_SHARED_POSTGRES',
-          plaintextValue: this.dynamicPgPass,
-          description: 'Administrative credential for deploymind-shared-postgres',
-          isSystemGenerated: true,
-        })
-        .catch(() => {});
-    }
-    return this.dynamicPgPass;
+  // Cryptographically secure, Vault-persisted admin credential getters
+  async getPostgresAdminPassword(): Promise<string> {
+    return this.resolveAdminPassword('postgres');
   }
 
-  getRedisAdminPassword(): string {
-    if (!this.dynamicRedisPass) {
-      this.dynamicRedisPass = crypto.randomBytes(24).toString('hex');
-      vaultService
-        .createCredential({
-          keyName: 'ADMIN_SECRET_DEPLOYMIND_SHARED_REDIS',
-          plaintextValue: this.dynamicRedisPass,
-          description: 'Administrative credential for deploymind-shared-redis',
-          isSystemGenerated: true,
-        })
-        .catch(() => {});
-    }
-    return this.dynamicRedisPass;
+  async getRedisAdminPassword(): Promise<string> {
+    return this.resolveAdminPassword('redis');
   }
 
   // Ensures any backing service cluster is online and tracked in DB
@@ -166,11 +142,17 @@ export class ResourceManager {
 
     if (res) {
       await adapter.deprovisionTenant(res.containerName, projectId);
-    }
 
-    await db
-      .delete(schema.resourceTenants)
-      .where(eq(schema.resourceTenants.projectId, projectId));
+      // Strictly scope deletion to this specific resource and project so other service tenants remain intact
+      await db
+        .delete(schema.resourceTenants)
+        .where(
+          and(
+            eq(schema.resourceTenants.projectId, projectId),
+            eq(schema.resourceTenants.resourceId, res.id)
+          )
+        );
+    }
   }
 
   async deprovisionPostgresTenant(projectId: string): Promise<void> {

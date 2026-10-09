@@ -88,9 +88,9 @@ describe('Security, Reliability, and Architectural Hardening Fixes', () => {
   });
 
   describe('Issue 3 & 4: Shared PostgreSQL & Redis Tenant Security', () => {
-    it('should use non-hardcoded dynamic admin passwords for PostgreSQL and Redis', () => {
-      const pgPass1 = resourceManager.getPostgresAdminPassword();
-      const rdPass1 = resourceManager.getRedisAdminPassword();
+    it('should use non-hardcoded dynamic admin passwords for PostgreSQL and Redis', async () => {
+      const pgPass1 = await resourceManager.getPostgresAdminPassword();
+      const rdPass1 = await resourceManager.getRedisAdminPassword();
 
       expect(pgPass1).toBeDefined();
       expect(pgPass1).not.toBe('deploymind_secure_pass'); // Verified: Hardcoded password eliminated!

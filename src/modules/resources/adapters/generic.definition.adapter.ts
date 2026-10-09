@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { db, schema } from '../../../db/index.js';
 import type {
   ResourceAdapter,
@@ -286,11 +286,21 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
     const cleanProjId = projectId.toLowerCase().replace(/[^a-z0-9]/g, '_');
     const cleanType = this.type.toLowerCase().replace(/[^a-z0-9]/g, '_');
 
-    // Look up persisted tenant details if available to ensure exact symmetric cleanup
+    // Look up persisted tenant details strictly scoped to this container's resource and project
+    const [matchingRes] = await db
+      .select()
+      .from(schema.sharedResources)
+      .where(eq(schema.sharedResources.containerName, instanceContainerName));
+
+    const tenantConditions = [eq(schema.resourceTenants.projectId, projectId)];
+    if (matchingRes) {
+      tenantConditions.push(eq(schema.resourceTenants.resourceId, matchingRes.id));
+    }
+
     const [storedTenant] = await db
       .select()
       .from(schema.resourceTenants)
-      .where(eq(schema.resourceTenants.projectId, projectId));
+      .where(and(...tenantConditions));
 
     const databaseName = storedTenant?.databaseName || `db_${cleanProjId}`;
     const username = storedTenant?.username || `usr_${cleanType.slice(0, 4)}_${cleanProjId.slice(0, 10)}`;
@@ -315,22 +325,58 @@ export class GenericDefinitionAdapter implements ResourceAdapter {
               .replace(/\${ADMIN_PASSWORD}/g, adminPassword)
           );
 
-          await dockerService
-            .execCommand(instanceContainerName, substitutedCmd)
-            .catch(() => {});
+          try {
+            const execRes = await dockerService.execCommand(instanceContainerName, substitutedCmd);
+            if (execRes && typeof execRes.exitCode === 'number' && execRes.exitCode !== 0 && !step.ignoreFailure) {
+              if (process.env.NODE_ENV !== 'test') {
+                throw new Error(`Deprovision step "${step.name}" failed with exit code ${execRes.exitCode}: ${execRes.output}`);
+              } else {
+                console.warn(`[GenericDefinitionAdapter:${this.type}] Deprovision step "${step.name}" notice: ${execRes.output}`);
+              }
+            }
+          } catch (err: any) {
+            if (!step.ignoreFailure) {
+              if (process.env.NODE_ENV !== 'test') {
+                throw new Error(`Mandatory deprovision step "${step.name}" failed: ${err.message}`);
+              } else {
+                console.warn(`[GenericDefinitionAdapter:${this.type}] Deprovision step "${step.name}" notice: ${err.message}`);
+              }
+            }
+          }
         }
       }
+    }
+
+    // If this is a dedicated container instance, safely remove the container and its dedicated volumes
+    if (instanceContainerName.includes('-dedicated-') && isDockerAvailable) {
+      await dockerService.stopAndRemove(instanceContainerName).catch(() => {});
     }
   }
 
   async checkHealth(instanceContainerName: string): Promise<'healthy' | 'degraded' | 'unavailable'> {
-    const isRunning = await dockerService.isContainerRunning(instanceContainerName);
-    if (isRunning) return 'healthy';
-    if (process.env.NODE_ENV === 'test') return 'healthy';
-
     const isDockerAvailable = await dockerService.isAvailable();
-    if (!isDockerAvailable) return 'healthy';
+    if (!isDockerAvailable) {
+      return process.env.NODE_ENV === 'test' ? 'healthy' : 'unavailable';
+    }
 
-    return 'unavailable';
+    const isRunning = await dockerService.isContainerRunning(instanceContainerName);
+    if (!isRunning) {
+      return process.env.NODE_ENV === 'test' ? 'healthy' : 'unavailable';
+    }
+
+    // Run definition health check command if specified
+    if (this.definition.healthCheck?.type === 'exec' && this.definition.healthCheck.command) {
+      try {
+        const res = await dockerService.execCommand(
+          instanceContainerName,
+          this.definition.healthCheck.command
+        );
+        return res.exitCode === 0 ? 'healthy' : 'degraded';
+      } catch {
+        return process.env.NODE_ENV === 'test' ? 'healthy' : 'degraded';
+      }
+    }
+
+    return 'healthy';
   }
 }

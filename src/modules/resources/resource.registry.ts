@@ -51,13 +51,22 @@ export class ResourceRegistry {
   async getOrResolveAdapter(type: string, hint?: string): Promise<ResourceAdapter> {
     const normalized = this.normalizeType(type);
     const existing = this.adapters.get(normalized);
-    if (existing) return existing;
+    if (existing) {
+      if ((existing as any).definition?.status === 'rejected' || (existing as any).definition?.status === 'revoked') {
+        throw new Error(`Service definition for "${normalized}" has been ${(existing as any).definition.status} and cannot be executed.`);
+      }
+      return existing;
+    }
 
     // Dynamically research and generate definition via AI and catalog discovery
     const definition = await serviceDefinitionGenerator.getOrGenerateDefinition({
       serviceType: normalized,
       contextHint: hint,
     });
+
+    if (definition.status === 'rejected' || definition.status === 'revoked') {
+      throw new Error(`Service definition for "${normalized}" has been ${definition.status} and cannot be executed.`);
+    }
 
     const genericAdapter = new GenericDefinitionAdapter(definition);
     this.registerAdapter(genericAdapter);

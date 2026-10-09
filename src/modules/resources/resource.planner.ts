@@ -37,6 +37,23 @@ export class ResourcePlanner {
       }
     }
 
+    // Policy Check 0: Security Boundary - Reject revoked or rejected definitions
+    const [storedDef] = await db
+      .select()
+      .from(schema.serviceDefinitions)
+      .where(eq(schema.serviceDefinitions.serviceType, normalizedType));
+
+    const defStatus = storedDef?.status || (adapter as any)?.definition?.status;
+    if (defStatus === 'rejected' || defStatus === 'revoked') {
+      return {
+        decision: {
+          action: 'reject',
+          reason: `Service definition for "${requirement.type}" is ${defStatus} and forbidden from execution.`,
+        },
+        reasoning: `Backing service "${requirement.type}" definition has been ${defStatus} by security policy.`,
+      };
+    }
+
     // Policy Check 1: If application explicitly demands dedicated isolation
     if (requirement.isolationLevel === 'dedicated') {
       return {
@@ -59,9 +76,9 @@ export class ResourcePlanner {
     // Filter to healthy candidates only (reject degraded and unavailable instances)
     const healthyCandidates = candidates.filter((c) => c.status === 'healthy');
 
-    // Retrieve maximum tenant capacity from definition if available
-    const maxTenants =
-      (adapter as any)?.definition?.multiTenancy?.maxTenantsPerInstance || 50;
+    // Retrieve maximum tenant capacity from definition using nullish handling (protects configured 0 or 1)
+    const configuredMax = (adapter as any)?.definition?.multiTenancy?.maxTenantsPerInstance;
+    const maxTenants = typeof configuredMax === 'number' && configuredMax >= 0 ? configuredMax : 50;
 
     // Policy Check 4: Find healthy instance with available capacity
     const healthyCandidate = healthyCandidates.find(
