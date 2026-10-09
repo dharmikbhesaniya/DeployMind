@@ -120,6 +120,9 @@ export class ResourcePlanner {
         throw new Error(`Shared resource ${resourceId} not found in database.`);
       }
       containerName = existing.containerName;
+      if (normalizedType === 'mongodb' || normalizedType === 'mongo') {
+        containerName = 'deploymind-shared-mongo';
+      }
       reused = true;
     } else {
       const isDedicated = requirement.isolationLevel === 'dedicated';
@@ -131,9 +134,16 @@ export class ResourcePlanner {
         resourceId = `res_shared_${normalizedType}`;
       }
 
+      const defaultSharedName =
+        normalizedType === 'mongodb' || normalizedType === 'mongo'
+          ? 'deploymind-shared-mongo'
+          : `deploymind-shared-${normalizedType}`;
+
       const instanceInfo = await adapter.ensureInstance(resourceId, {
         isDedicated,
-        containerName: isDedicated ? `deploymind-${normalizedType}-dedicated-${cleanProj}` : undefined,
+        containerName: isDedicated
+          ? `deploymind-${normalizedType}-dedicated-${cleanProj}`
+          : defaultSharedName,
       });
       containerName = instanceInfo.containerName;
 

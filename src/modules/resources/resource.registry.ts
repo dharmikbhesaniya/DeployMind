@@ -1,12 +1,6 @@
 import { eq, and } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { ResourceAdapter, ResourceCandidate } from './adapters/resource.adapter.js';
-import { postgresAdapter } from './adapters/postgres.adapter.js';
-import { redisAdapter } from './adapters/redis.adapter.js';
-import { mysqlAdapter } from './adapters/mysql.adapter.js';
-import { mongoAdapter } from './adapters/mongodb.adapter.js';
-import { rabbitmqAdapter } from './adapters/rabbitmq.adapter.js';
-import { minioAdapter } from './adapters/minio.adapter.js';
 import { GenericDefinitionAdapter } from './adapters/generic.definition.adapter.js';
 import { BUILTIN_SERVICE_DEFINITIONS } from './definitions/service.definition.catalog.js';
 import { serviceDefinitionGenerator } from './definitions/service.definition.generator.js';
@@ -27,15 +21,7 @@ export class ResourceRegistry {
   ]);
 
   constructor() {
-    // 1. Register baseline adapters
-    this.registerAdapter(postgresAdapter);
-    this.registerAdapter(redisAdapter);
-    this.registerAdapter(mysqlAdapter);
-    this.registerAdapter(mongoAdapter);
-    this.registerAdapter(rabbitmqAdapter);
-    this.registerAdapter(minioAdapter);
-
-    // 2. Register catalog definitions as generic definition adapters
+    // Register all service definitions dynamically through GenericDefinitionAdapter
     for (const [key, def] of Object.entries(BUILTIN_SERVICE_DEFINITIONS)) {
       this.registerAdapter(new GenericDefinitionAdapter(def));
       for (const alias of def.aliases) {

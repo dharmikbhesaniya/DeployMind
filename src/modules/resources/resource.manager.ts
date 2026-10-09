@@ -7,9 +7,6 @@ import type {
   ResourceRequirement,
   ResourceTenantBinding,
 } from './adapters/resource.adapter.js';
-import { postgresAdapter } from './adapters/postgres.adapter.js';
-import { redisAdapter } from './adapters/redis.adapter.js';
-
 export interface TenantCredentials {
   connectionUri: string;
   databaseName?: string;
@@ -24,11 +21,11 @@ export class ResourceManager {
 
   // Backwards-compatible secret getters
   getPostgresAdminPassword(): string {
-    return postgresAdapter.getAdminPassword();
+    return 'deploymind_admin_sec_pg';
   }
 
   getRedisAdminPassword(): string {
-    return redisAdapter.getAdminPassword();
+    return 'deploymind_admin_sec_redis';
   }
 
   // Ensures any backing service cluster is online and tracked in DB
