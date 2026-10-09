@@ -29,6 +29,9 @@ import {
   MessageSquare,
   HelpCircle,
   Settings,
+  FlaskConical,
+  Power,
+  X,
 } from "lucide-react";
 import { AIChatConsole } from "./components/AIChatConsole";
 import { CLIENT_CONSTANTS } from "./config/constants";
@@ -163,6 +166,17 @@ export default function App() {
   const [backups, setBackups] = useState<BackupItem[]>([]);
   const [runningBackup, setRunningBackup] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // AI Operations State
+  const [togglingProjectId, setTogglingProjectId] = useState<string | null>(null);
+  const [testingProjectId, setTestingProjectId] = useState<string | null>(null);
+  const [testModal, setTestModal] = useState<{
+    projectId: string;
+    projectName: string;
+    output: string;
+    success: boolean;
+    testCommand: string;
+  } | null>(null);
 
   // Domain Management State
   const [baseDomain, setBaseDomain] = useState<string>("localhost");
@@ -1417,6 +1431,60 @@ export default function App() {
                       <div className="flex items-center space-x-3">
                         <button
                           onClick={async () => {
+                            setTestingProjectId(p.id);
+                            try {
+                              const res = await fetch(`${API_BASE}/api/ai/run-tests`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ projectId: p.id }),
+                              });
+                              const data = await res.json();
+                              setTestModal({
+                                projectId: p.id,
+                                projectName: p.name,
+                                output: data.output || data.message || "No test output",
+                                success: data.success,
+                                testCommand: data.testCommand || "dynamic AI test command",
+                              });
+                            } catch (err: any) {
+                              alert(`Test execution failed: ${err.message}`);
+                            } finally {
+                              setTestingProjectId(null);
+                            }
+                          }}
+                          disabled={testingProjectId === p.id}
+                          className="text-cyan-400 hover:text-cyan-300 font-medium flex items-center space-x-1 transition disabled:opacity-50"
+                          title="Run tests dynamically via AI"
+                        >
+                          <FlaskConical className={`h-3.5 w-3.5 ${testingProjectId === p.id ? "animate-spin" : ""}`} />
+                          <span>{testingProjectId === p.id ? "Testing..." : "Test"}</span>
+                        </button>
+                        <button
+                          onClick={async () => {
+                            setTogglingProjectId(p.id);
+                            const action = p.status === "stopped" ? "start" : "stop";
+                            try {
+                              await fetch(`${API_BASE}/api/ai/service-toggle`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ projectId: p.id, action }),
+                              });
+                              fetchData();
+                            } catch (err: any) {
+                              alert(`Service toggle failed: ${err.message}`);
+                            } finally {
+                              setTogglingProjectId(null);
+                            }
+                          }}
+                          disabled={togglingProjectId === p.id}
+                          className="text-amber-400 hover:text-amber-300 font-medium flex items-center space-x-1 transition disabled:opacity-50"
+                          title="Toggle service on/off"
+                        >
+                          <Power className={`h-3.5 w-3.5 ${togglingProjectId === p.id ? "animate-pulse" : ""}`} />
+                          <span>{p.status === "stopped" ? "Start" : "Stop"}</span>
+                        </button>
+                        <button
+                          onClick={async () => {
                             if (
                               window.confirm(
                                 `Are you sure you want to permanently delete project "${p.name}"? This will stop all Docker containers, delete volumes, routes, and database records.`,
@@ -2050,6 +2118,50 @@ export default function App() {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {testModal && (
+          <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl max-w-2xl w-full p-6 shadow-2xl space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <FlaskConical className="h-5 w-5 text-cyan-400" />
+                  <h3 className="font-semibold text-white">
+                    AI Test Runner — {testModal.projectName}
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setTestModal(null)}
+                  className="text-slate-400 hover:text-white"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="flex items-center justify-between text-xs text-slate-400 bg-slate-950 p-2.5 rounded border border-slate-800">
+                <span className="font-mono">Command: {testModal.testCommand}</span>
+                <span
+                  className={`font-semibold px-2 py-0.5 rounded text-[11px] ${
+                    testModal.success
+                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                      : "bg-red-500/20 text-red-400 border border-red-500/30"
+                  }`}
+                >
+                  {testModal.success ? "PASSED" : "FAILED / NO TESTS"}
+                </span>
+              </div>
+              <pre className="bg-slate-950 border border-slate-800 rounded p-4 text-xs font-mono text-slate-300 max-h-72 overflow-y-auto whitespace-pre-wrap">
+                {testModal.output}
+              </pre>
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setTestModal(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-medium"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         )}

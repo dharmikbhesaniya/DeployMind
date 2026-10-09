@@ -4,7 +4,7 @@ export interface DeploymentLogEvent {
   deploymentId: string;
   timestamp: number;
   level: 'info' | 'warn' | 'error' | 'success';
-  stage: 'analyze' | 'plan' | 'build' | 'deploy' | 'health_check' | 'route' | 'auto_heal';
+  stage: 'analyze' | 'plan' | 'build' | 'deploy' | 'health_check' | 'route' | 'auto_heal' | 'dependency' | 'test' | 'health' | 'install' | 'install-fallback' | 'migration';
   message: string;
   details?: unknown;
 }

@@ -104,6 +104,8 @@ export class AIReasoner {
       suggestedSubdomain: `${slug}.${await settingsService.getBaseDomain()}`,
       volumes: [],
       securityRisks: [],
+      confidenceScore: 0.95,
+      evidenceExplanation: [],
     };
   }
 
@@ -186,6 +188,8 @@ Synthesize the final deployment plan. Return ONLY JSON conforming to:
       suggestedSubdomain: `${slug}.${await settingsService.getBaseDomain()}`,
       volumes: [],
       securityRisks: [],
+      confidenceScore: 0.95,
+      evidenceExplanation: [],
     };
   }
 }

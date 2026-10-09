@@ -14,6 +14,9 @@ import { healthObserver } from '../health/health.observer.js';
 import { diagnosticHealer } from '../health/diagnostic.healer.js';
 import { dockerfileSynthesizer } from '../builder/dockerfile.synthesizer.js';
 import { nativeRunner } from '../native-runner/native.runner.js';
+import { aiDeploymentExecutor } from '../ai/ai.deployment.executor.js';
+import { aiTaskEngine } from '../ai/ai.task.engine.js';
+import { aiDependencyManager } from '../ai/ai.dependency.manager.js';
 import { capacityService } from '../system/capacity.service.js';
 import { lockManager } from '../../core/lock.manager.js';
 import { eventBus } from '../../core/events.js';
@@ -170,8 +173,8 @@ export class DeploymentOrchestrator {
 
     // Build structured evidence and confidence breakdown (addresses research.txt sections 28 & 29)
     const evidenceList = [
-      { category: 'Runtime', detectedValue: manifest.primaryRuntime || 'Node.js', source: manifest.packageManager ? 'lockfile' : 'heuristics', confidence: 0.98 },
-      { category: 'Port', detectedValue: String(plan.exposedPort), source: manifest.detectedPort ? 'source/EXPOSE' : 'framework_default', confidence: 0.95 },
+      { category: 'Runtime', detectedValue: manifest.primaryRuntime || 'Node.js', source: manifest.primaryRuntime ? 'manifest' : 'heuristics', confidence: 0.98 },
+      { category: 'Port', detectedValue: String(plan.exposedPort), source: manifest.detectedPorts?.length > 0 ? 'source/EXPOSE' : 'framework_default', confidence: 0.95 },
     ];
     if (plan.requiredBackingServices.length > 0) {
       for (const s of plan.requiredBackingServices) {
@@ -428,26 +431,67 @@ export class DeploymentOrchestrator {
       const freeHostPort = await dockerService.findAvailablePort(4000);
       activePort = freeHostPort;
 
-      // PRIORITY 2: NATIVE HOST RUNNER IN STRICT PRODUCTION MODE
+      // PRIORITY 2: AI-DRIVEN NATIVE DEPLOYMENT
+      // The AI Task Engine dynamically reasons about what commands to run
+      // rather than using hardcoded static logic.
       eventBus.emitLog({
         deploymentId: params.deploymentId,
         timestamp: Date.now(),
-        level: 'warn',
+        level: 'info',
         stage: 'deploy',
-        message: `[Runtime Priority 2: Native Host Fallback] Executing cloned repository directly on host in STRICT PRODUCTION MODE (port: ${activePort})...`,
+        message: `[Runtime Priority 2: AI-Driven Native Deployment] AI Task Engine inspecting repository to dynamically determine install, build, and start commands...`,
       });
 
-      const procInfo = await nativeRunner.startProductionApp({
+      // 1. AI synthesizes dynamic task plan from actual repo contents
+      const taskPlan = await aiTaskEngine.synthesizeTaskPlan(sourceDir, params.deploymentId);
+
+      // 2. Check and resolve system dependencies
+      const depChecks = await aiDependencyManager.analyzeDependencies(taskPlan, params.deploymentId);
+      const { pendingApproval } = await aiDependencyManager.installMissingDependencies(depChecks, params.deploymentId);
+      if (pendingApproval.length > 0) {
+        eventBus.emitLog({
+          deploymentId: params.deploymentId,
+          timestamp: Date.now(),
+          level: 'warn',
+          stage: 'dependency',
+          message: `[AI Dependency Manager] ${pendingApproval.length} dependencies need approval: ${pendingApproval.map(d => d.name).join(', ')}. Proceeding with available tools.`,
+        });
+      }
+
+      // 3. Execute AI-driven deployment pipeline (install → migrate → build → start)
+      const aiExecution = await aiDeploymentExecutor.executeAIDrivenDeployment({
         deploymentId: params.deploymentId,
         projectId,
         sourceDir,
         env: resolvedEnv,
         port: activePort,
-        runtime: plan.runtime,
-        buildCommand: plan.readmeSummary?.detectedBuildCommand || plan.migrationCommand,
-        startCommand: plan.readmeSummary?.detectedStartCommand || plan.entrypointCommand,
+        runMigrations: Boolean(plan.migrationCommand || taskPlan.migrationCommand),
       });
-      containerId = `pid_${procInfo.pid}`;
+
+      if (aiExecution.startResult) {
+        containerId = `pid_${aiExecution.startResult.pid}`;
+        activePort = aiExecution.startResult.port;
+      } else {
+        // Fallback to legacy native runner if AI executor couldn't determine start command
+        eventBus.emitLog({
+          deploymentId: params.deploymentId,
+          timestamp: Date.now(),
+          level: 'warn',
+          stage: 'deploy',
+          message: `[Fallback] AI executor could not start application. Falling back to legacy native runner...`,
+        });
+        const procInfo = await nativeRunner.startProductionApp({
+          deploymentId: params.deploymentId,
+          projectId,
+          sourceDir,
+          env: resolvedEnv,
+          port: activePort,
+          runtime: plan.runtime,
+          buildCommand: plan.readmeSummary?.detectedBuildCommand || plan.migrationCommand,
+          startCommand: plan.readmeSummary?.detectedStartCommand || plan.entrypointCommand,
+        });
+        containerId = `pid_${procInfo.pid}`;
+      }
       targetUpstream = `127.0.0.1:${activePort}`;
     }
 

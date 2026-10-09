@@ -1,5 +1,9 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { eq, desc } from 'drizzle-orm';
+import { config } from '../config/index.js';
 import { db, schema } from '../db/index.js';
 import { deploymentOrchestrator } from '../modules/planner/deployment.orchestrator.js';
 import { vaultService } from '../modules/vault/vault.service.js';
@@ -15,6 +19,9 @@ import { capacityService } from '../modules/system/capacity.service.js';
 import { reconcilerService } from '../modules/orchestration/reconciler.service.js';
 import { retentionManager } from '../modules/orchestration/retention.manager.js';
 import { incidentService } from '../modules/health/incident.service.js';
+import { aiTaskEngine } from '../modules/ai/ai.task.engine.js';
+import { aiDeploymentExecutor } from '../modules/ai/ai.deployment.executor.js';
+import { aiDependencyManager } from '../modules/ai/ai.dependency.manager.js';
 
 export async function registerRoutes(app: FastifyInstance) {
   // System status check
@@ -328,6 +335,209 @@ export async function registerRoutes(app: FastifyInstance) {
     const body = req.body as { retentionDays?: number };
     const days = body?.retentionDays || 7;
     return retentionManager.pruneOldArtifacts(days);
+  });
+
+  // ============================================================
+  // AI Task Engine — Dynamic Command Reasoning & Management
+  // ============================================================
+
+  // Inspect a project directory and get AI-synthesized task plan
+  // This shows what commands the AI would run for install, build, start, test, and migrate
+  app.post('/api/ai/task-plan', async (req, reply) => {
+    const body = req.body as { sourceDir?: string; projectId?: string };
+    let sourceDir = body?.sourceDir;
+
+    // Resolve from project ID if sourceDir not provided
+    if (!sourceDir && body?.projectId) {
+      const [proj] = await db.select().from(schema.projects).where(eq(schema.projects.id, body.projectId));
+      if (proj) {
+        sourceDir = path.join(config.dataDir, 'repos', proj.id);
+      }
+    }
+
+    if (!sourceDir) {
+      return reply.status(400).send({ error: 'sourceDir or projectId is required' });
+    }
+
+    try {
+      const taskPlan = await aiTaskEngine.synthesizeTaskPlan(sourceDir);
+      return taskPlan;
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'Task plan synthesis failed' });
+    }
+  });
+
+  // Check system dependencies for a project
+  app.post('/api/ai/dependencies/check', async (req, reply) => {
+    const body = req.body as { sourceDir?: string; projectId?: string };
+    let sourceDir = body?.sourceDir;
+
+    if (!sourceDir && body?.projectId) {
+      const [proj] = await db.select().from(schema.projects).where(eq(schema.projects.id, body.projectId));
+      if (proj) {
+        sourceDir = path.join(config.dataDir, 'repos', proj.id);
+      }
+    }
+
+    if (!sourceDir) {
+      return reply.status(400).send({ error: 'sourceDir or projectId is required' });
+    }
+
+    try {
+      const taskPlan = await aiTaskEngine.synthesizeTaskPlan(sourceDir);
+      const checks = await aiDependencyManager.analyzeDependencies(taskPlan);
+      return {
+        taskPlan: {
+          runtime: taskPlan.runtime,
+          packageManager: taskPlan.packageManager,
+          systemDependencies: taskPlan.systemDependencies,
+        },
+        dependencies: checks,
+        allInstalled: checks.every(c => c.installed),
+        missingCount: checks.filter(c => !c.installed).length,
+      };
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'Dependency check failed' });
+    }
+  });
+
+  // Install a specific dependency (respects ASK/AUTO mode)
+  app.post('/api/ai/dependencies/install', async (req, reply) => {
+    const body = req.body as { name: string; installCommand: string };
+    if (!body?.name || !body?.installCommand) {
+      return reply.status(400).send({ error: 'name and installCommand are required' });
+    }
+
+    try {
+      const result = await aiDependencyManager.installDependency({
+        name: body.name,
+        purpose: '',
+        installCommand: body.installCommand,
+        checkCommand: '',
+        installed: false,
+        required: true,
+        category: 'system_lib',
+      });
+      return result;
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'Installation failed' });
+    }
+  });
+
+  // AI-driven test runner: dynamically determine and run tests for a project
+  app.post('/api/ai/run-tests', async (req, reply) => {
+    const body = req.body as { projectId: string };
+    if (!body?.projectId) {
+      return reply.status(400).send({ error: 'projectId is required' });
+    }
+
+    const [proj] = await db.select().from(schema.projects).where(eq(schema.projects.id, body.projectId));
+    if (!proj) {
+      return reply.status(404).send({ error: 'Project not found' });
+    }
+
+    const sourceDir = path.join(config.dataDir, 'repos', proj.id);
+    if (!fs.existsSync(sourceDir)) {
+      return reply.status(404).send({ error: 'Project source directory not found' });
+    }
+
+    try {
+      const taskPlan = await aiTaskEngine.synthesizeTaskPlan(sourceDir);
+      if (!taskPlan.testCommand) {
+        return {
+          success: false,
+          message: 'No test command could be determined for this project',
+          taskPlan: {
+            runtime: taskPlan.runtime,
+            framework: taskPlan.packageManager,
+          },
+        };
+      }
+
+      // Execute tests in the project directory
+      const resolvedEnv = await vaultService.resolveProjectVariables(proj.id);
+      const execution = await aiDeploymentExecutor.executeAIDrivenDeployment({
+        deploymentId: `test_${crypto.randomUUID()}`,
+        projectId: proj.id,
+        sourceDir,
+        env: resolvedEnv,
+        port: 0, // No port needed for tests
+        runTests: true,
+        runMigrations: false,
+      });
+
+      return {
+        success: execution.testResult?.success || false,
+        testCommand: taskPlan.testCommand,
+        exitCode: execution.testResult?.exitCode,
+        output: execution.testResult?.output?.slice(-3000),
+        duration: execution.testResult?.duration,
+        runtime: taskPlan.runtime,
+      };
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message || 'Test execution failed' });
+    }
+  });
+
+  // AI-driven service toggle (start/stop with intelligent state management)
+  app.post('/api/ai/service-toggle', async (req, reply) => {
+    const body = req.body as { projectId: string; action: 'start' | 'stop' | 'restart' };
+    if (!body?.projectId || !body?.action) {
+      return reply.status(400).send({ error: 'projectId and action (start|stop|restart) are required' });
+    }
+
+    const [proj] = await db.select().from(schema.projects).where(eq(schema.projects.id, body.projectId));
+    if (!proj) {
+      return reply.status(404).send({ error: 'Project not found' });
+    }
+
+    const servs = await db.select().from(schema.services).where(eq(schema.services.projectId, proj.id));
+    const results: any[] = [];
+
+    for (const s of servs) {
+      try {
+        if (body.action === 'stop' || body.action === 'restart') {
+          if (s.containerId && !s.containerId.startsWith('pid_')) {
+            await dockerService.stopAndRemove(s.containerId).catch(() => {});
+            results.push({ service: s.name, action: 'stopped', containerId: s.containerId });
+          } else if (s.containerId?.startsWith('pid_')) {
+            aiDeploymentExecutor.stopProcess(proj.id);
+            results.push({ service: s.name, action: 'stopped', pid: s.containerId });
+          }
+        }
+
+        if (body.action === 'start' || body.action === 'restart') {
+          const sourceDir = path.join(config.dataDir, 'repos', proj.id);
+          if (fs.existsSync(sourceDir)) {
+            const taskPlan = await aiTaskEngine.synthesizeTaskPlan(sourceDir);
+            const resolvedEnv = await vaultService.resolveProjectVariables(proj.id);
+            const freePort = await dockerService.findAvailablePort(4000);
+
+            const execution = await aiDeploymentExecutor.executeAIDrivenDeployment({
+              deploymentId: `toggle_${crypto.randomUUID()}`,
+              projectId: proj.id,
+              sourceDir,
+              env: resolvedEnv,
+              port: freePort,
+            });
+
+            if (execution.startResult) {
+              results.push({
+                service: s.name,
+                action: 'started',
+                pid: execution.startResult.pid,
+                port: execution.startResult.port,
+                command: execution.startResult.command,
+              });
+            }
+          }
+        }
+      } catch (err: any) {
+        results.push({ service: s.name, error: err.message });
+      }
+    }
+
+    return { success: true, projectId: body.projectId, action: body.action, results };
   });
 
   // List all credentials in the Vault
