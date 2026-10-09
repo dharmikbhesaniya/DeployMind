@@ -44,8 +44,8 @@ export const DeploymentPlanSchema = z.object({
   environmentVariables: z.array(DetectedVariableSchema),
   requiredBackingServices: z.array(
     z.object({
-      serviceType: z.enum(['postgres', 'redis', 'mysql', 'mongodb', 'minio']),
-      strategy: z.enum(['reuse_shared', 'dedicated_container']),
+      serviceType: z.string(),
+      strategy: z.enum(['reuse_shared', 'dedicated_container']).default('reuse_shared'),
       reason: z.string(),
     })
   ),

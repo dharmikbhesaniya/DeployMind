@@ -8,6 +8,8 @@ import { repoAnalyzer } from '../analyzer/repo.analyzer.js';
 import { aiReasoner } from '../ai/ai.reasoner.js';
 import { vaultService } from '../vault/vault.service.js';
 import { resourceManager } from '../resources/resource.manager.js';
+import { resourcePlanner } from '../resources/resource.planner.js';
+import { resourceRegistry } from '../resources/resource.registry.js';
 import { dockerService } from '../docker/docker.service.js';
 import { proxyService } from '../proxy/proxy.service.js';
 import { healthObserver } from '../health/health.observer.js';
@@ -335,60 +337,62 @@ export class DeploymentOrchestrator {
     // 2. Fetch all decrypted variables
     const resolvedEnv = await vaultService.resolveProjectVariables(projectId);
 
-    // 2b. Automatically provision and wire backing services (PostgreSQL, Redis) on the Docker network
-    // If a service/DB is needed and the user didn't supply an external connection string:
-    const needsPostgres =
-      !handledKeys.has('DATABASE_URL') &&
-      ((plan.requiredBackingServices || []).some((s) => s.serviceType === 'postgres') ||
-        plan.environmentVariables.some((v) => v.key === 'DATABASE_URL' || v.key.startsWith('POSTGRES_')));
+    // 2b. Automatically provision and wire backing services dynamically on deploymind-net
+    // Generic Resource Planner evaluates Compatibility, Capacity, and Isolation for any service
+    const backingServiceTypes = new Set<string>();
 
-    if (needsPostgres && !resolvedEnv['DATABASE_URL']) {
-      try {
-        const pgTenant = await resourceManager.provisionPostgresTenant(projectId);
-        resolvedEnv['DATABASE_URL'] = pgTenant.connectionUri;
-        resolvedEnv['POSTGRES_URL'] = pgTenant.connectionUri;
-        resolvedEnv['PGHOST'] = 'deploymind-shared-postgres';
-        resolvedEnv['PGPORT'] = '5432';
-        resolvedEnv['PGUSER'] = pgTenant.username || '';
-        resolvedEnv['PGPASSWORD'] = pgTenant.password || '';
-        resolvedEnv['PGDATABASE'] = pgTenant.databaseName || '';
+    for (const service of plan.requiredBackingServices || []) {
+      backingServiceTypes.add(service.serviceType);
+    }
 
-        eventBus.emitLog({
-          deploymentId: params.deploymentId,
-          timestamp: Date.now(),
-          level: 'info',
-          stage: 'deploy',
-          message: `[Docker Network] Attached PostgreSQL tenant (${pgTenant.databaseName}) to deploymind-net at deploymind-shared-postgres:5432`,
-        });
-      } catch (err: any) {
-        eventBus.emitLog({
-          deploymentId: params.deploymentId,
-          timestamp: Date.now(),
-          level: 'warn',
-          stage: 'deploy',
-          message: `Could not provision PostgreSQL tenant: ${err.message}`,
-        });
+    // Infer from environment variables if not already captured
+    for (const v of plan.environmentVariables) {
+      if ((v.key === 'DATABASE_URL' || v.key.startsWith('POSTGRES_')) && !resolvedEnv['DATABASE_URL'] && !handledKeys.has('DATABASE_URL')) {
+        backingServiceTypes.add('postgres');
+      } else if ((v.key === 'REDIS_URL' || v.key.startsWith('REDIS_')) && !resolvedEnv['REDIS_URL'] && !handledKeys.has('REDIS_URL')) {
+        backingServiceTypes.add('redis');
+      } else if ((v.key === 'MYSQL_URL' || v.key.startsWith('MYSQL_')) && !resolvedEnv['MYSQL_URL'] && !handledKeys.has('MYSQL_URL')) {
+        backingServiceTypes.add('mysql');
+      } else if ((v.key === 'MONGODB_URI' || v.key.startsWith('MONGO_')) && !resolvedEnv['MONGODB_URI'] && !handledKeys.has('MONGODB_URI')) {
+        backingServiceTypes.add('mongodb');
+      } else if ((v.key === 'AMQP_URL' || v.key.startsWith('RABBITMQ_')) && !resolvedEnv['AMQP_URL'] && !handledKeys.has('AMQP_URL')) {
+        backingServiceTypes.add('rabbitmq');
+      } else if ((v.key === 'S3_ENDPOINT' || v.key.startsWith('AWS_')) && !resolvedEnv['S3_ENDPOINT'] && !handledKeys.has('S3_ENDPOINT')) {
+        backingServiceTypes.add('minio');
       }
     }
 
-    const needsRedis =
-      !handledKeys.has('REDIS_URL') &&
-      ((plan.requiredBackingServices || []).some((s) => s.serviceType === 'redis') ||
-        plan.environmentVariables.some((v) => v.key === 'REDIS_URL' || v.key.startsWith('REDIS_')));
-
-    if (needsRedis && !resolvedEnv['REDIS_URL']) {
+    for (const rawType of backingServiceTypes) {
+      const serviceType = resourceRegistry.normalizeType(rawType);
       try {
-        const rdTenant = await resourceManager.provisionRedisTenant(projectId);
-        resolvedEnv['REDIS_URL'] = rdTenant.connectionUri;
-        resolvedEnv['REDIS_HOST'] = 'deploymind-shared-redis';
-        resolvedEnv['REDIS_PORT'] = '6379';
+        const planDecision = await resourcePlanner.evaluateRequirement({
+          type: serviceType,
+          isolationLevel: 'standard',
+        });
+
+        eventBus.emitLog({
+          deploymentId: params.deploymentId,
+          timestamp: Date.now(),
+          level: 'info',
+          stage: 'plan',
+          message: `[Resource Planner] ${planDecision.reasoning}`,
+        });
+
+        const execution = await resourcePlanner.executeDecision({
+          decision: planDecision.decision,
+          projectId,
+          requirement: { type: serviceType, isolationLevel: 'standard' },
+        });
+
+        // Merge generated credentials into application environment
+        Object.assign(resolvedEnv, execution.binding.envExports);
 
         eventBus.emitLog({
           deploymentId: params.deploymentId,
           timestamp: Date.now(),
           level: 'info',
           stage: 'deploy',
-          message: `[Docker Network] Attached Redis tenant to deploymind-net at deploymind-shared-redis:6379`,
+          message: `[Docker Network] Attached ${serviceType} tenant (${execution.binding.databaseName || serviceType}) to deploymind-net (Reused existing container: ${execution.reused})`,
         });
       } catch (err: any) {
         eventBus.emitLog({
@@ -396,7 +400,7 @@ export class DeploymentOrchestrator {
           timestamp: Date.now(),
           level: 'warn',
           stage: 'deploy',
-          message: `Could not provision Redis tenant: ${err.message}`,
+          message: `Could not provision/wire ${serviceType} backing service: ${err.message}`,
         });
       }
     }
@@ -759,9 +763,29 @@ export class DeploymentOrchestrator {
 
     // 3. Deprovision shared resource tenants & Docker volumes if data deletion requested
     if (options.deleteData) {
-      await resourceManager.deprovisionPostgresTenant(projectId).catch(() => {});
-      await resourceManager.deprovisionRedisTenant(projectId).catch(() => {});
-      freedResources.push('PostgreSQL & Redis tenant allocations');
+      const boundTenants = await db
+        .select()
+        .from(schema.resourceTenants)
+        .where(eq(schema.resourceTenants.projectId, projectId));
+
+      for (const t of boundTenants) {
+        const [res] = await db
+          .select()
+          .from(schema.sharedResources)
+          .where(eq(schema.sharedResources.id, t.resourceId));
+        if (res) {
+          const adapter = resourceRegistry.getAdapter(res.resourceType);
+          if (adapter) {
+            await adapter.deprovisionTenant(res.containerName, projectId).catch(() => {});
+          }
+        }
+      }
+
+      await db
+        .delete(schema.resourceTenants)
+        .where(eq(schema.resourceTenants.projectId, projectId));
+
+      freedResources.push(`PostgreSQL, Redis & Backing service tenant allocations (${boundTenants.length} services deprovisioned)`);
 
       // Clean up project Docker volumes
       const projectVolumes = await dockerService.listVolumes(projectId).catch(() => []);

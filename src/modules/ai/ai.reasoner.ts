@@ -41,7 +41,7 @@ export class AIReasoner {
       });
     }
 
-    // 2. Detect required backing services strictly if declared in compose or project dependencies
+    // 2. Detect required backing services dynamically if declared in compose or project dependencies
     const requiredBackingServices: DeploymentPlan['requiredBackingServices'] = [];
     if (manifest.composeContent) {
       const composeLower = manifest.composeContent.toLowerCase();
@@ -49,14 +49,42 @@ export class AIReasoner {
         requiredBackingServices.push({
           serviceType: 'postgres',
           strategy: 'reuse_shared',
-          reason: 'PostgreSQL service explicitly declared in docker-compose manifest.',
+          reason: 'PostgreSQL service declared in docker-compose manifest.',
         });
       }
       if (composeLower.includes('redis')) {
         requiredBackingServices.push({
           serviceType: 'redis',
           strategy: 'reuse_shared',
-          reason: 'Redis service explicitly declared in docker-compose manifest.',
+          reason: 'Redis service declared in docker-compose manifest.',
+        });
+      }
+      if (composeLower.includes('mysql') || composeLower.includes('mariadb')) {
+        requiredBackingServices.push({
+          serviceType: 'mysql',
+          strategy: 'reuse_shared',
+          reason: 'MySQL / MariaDB service declared in docker-compose manifest.',
+        });
+      }
+      if (composeLower.includes('mongo') || composeLower.includes('mongodb')) {
+        requiredBackingServices.push({
+          serviceType: 'mongodb',
+          strategy: 'reuse_shared',
+          reason: 'MongoDB service declared in docker-compose manifest.',
+        });
+      }
+      if (composeLower.includes('rabbitmq') || composeLower.includes('amqp')) {
+        requiredBackingServices.push({
+          serviceType: 'rabbitmq',
+          strategy: 'reuse_shared',
+          reason: 'RabbitMQ service declared in docker-compose manifest.',
+        });
+      }
+      if (composeLower.includes('minio') || composeLower.includes('s3')) {
+        requiredBackingServices.push({
+          serviceType: 'minio',
+          strategy: 'reuse_shared',
+          reason: 'MinIO / S3 object storage service declared in docker-compose manifest.',
         });
       }
     }

@@ -1,10 +1,14 @@
-import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { eq, and } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { dockerService } from '../docker/docker.service.js';
 import { db, schema } from '../../db/index.js';
-import { config } from '../../config/index.js';
+import { resourceRegistry } from './resource.registry.js';
+import { resourcePlanner } from './resource.planner.js';
+import type {
+  ResourceRequirement,
+  ResourceTenantBinding,
+} from './adapters/resource.adapter.js';
+import { postgresAdapter } from './adapters/postgres.adapter.js';
+import { redisAdapter } from './adapters/redis.adapter.js';
 
 export interface TenantCredentials {
   connectionUri: string;
@@ -18,356 +22,129 @@ export class ResourceManager {
   readonly sharedPostgresName = 'deploymind-shared-postgres';
   readonly sharedRedisName = 'deploymind-shared-redis';
 
+  // Backwards-compatible secret getters
   getPostgresAdminPassword(): string {
-    const keyPath = path.resolve(config.dataDir, 'postgres_admin.key');
-    try {
-      if (fs.existsSync(keyPath)) {
-        const secret = fs.readFileSync(keyPath, 'utf8').trim();
-        if (secret) return secret;
-      }
-      const newSecret = crypto.randomBytes(24).toString('hex');
-      fs.mkdirSync(path.dirname(keyPath), { recursive: true });
-      fs.writeFileSync(keyPath, newSecret, { mode: 0o600 });
-      return newSecret;
-    } catch {
-      return 'deploymind_pg_sec_admin';
-    }
+    return postgresAdapter.getAdminPassword();
   }
 
   getRedisAdminPassword(): string {
-    const keyPath = path.resolve(config.dataDir, 'redis_admin.key');
-    try {
-      if (fs.existsSync(keyPath)) {
-        const secret = fs.readFileSync(keyPath, 'utf8').trim();
-        if (secret) return secret;
-      }
-      const newSecret = crypto.randomBytes(24).toString('hex');
-      fs.mkdirSync(path.dirname(keyPath), { recursive: true });
-      fs.writeFileSync(keyPath, newSecret, { mode: 0o600 });
-      return newSecret;
-    } catch {
-      return 'deploymind_rd_sec_admin';
-    }
+    return redisAdapter.getAdminPassword();
   }
 
-  // Ensures shared PostgreSQL cluster is available and tracked in DB
+  // Ensures any backing service cluster is online and tracked in DB
+  async ensureResource(type: string): Promise<string> {
+    const normalized = resourceRegistry.normalizeType(type);
+    const adapter = resourceRegistry.getAdapter(normalized);
+    if (!adapter) {
+      throw new Error(`Unsupported resource type: ${type}`);
+    }
+
+    const resourceId = `res_shared_${normalized}`;
+    const [existing] = await db
+      .select()
+      .from(schema.sharedResources)
+      .where(eq(schema.sharedResources.id, resourceId));
+
+    const instanceInfo = await adapter.ensureInstance(resourceId);
+
+    if (!existing) {
+      await db.insert(schema.sharedResources).values({
+        id: resourceId,
+        resourceType: normalized,
+        containerName: instanceInfo.containerName,
+        hostPort: instanceInfo.hostPort,
+        isActive: true,
+        metadata: JSON.stringify(instanceInfo.metadata),
+      });
+    }
+
+    return resourceId;
+  }
+
   async ensureSharedPostgres(): Promise<string> {
-    const isDockerReady = await dockerService.isAvailable();
-    const resourceId = 'res_shared_postgres';
-
-    // Track in database
-    const [existing] = await db
-      .select()
-      .from(schema.sharedResources)
-      .where(eq(schema.sharedResources.id, resourceId));
-
-    if (!existing) {
-      await db.insert(schema.sharedResources).values({
-        id: resourceId,
-        resourceType: 'postgres',
-        containerName: this.sharedPostgresName,
-        hostPort: 5432,
-        isActive: true,
-        metadata: JSON.stringify({ version: '16-alpine', defaultDb: 'postgres' }),
-      });
-    }
-
-    if (!isDockerReady) return resourceId;
-
-    try {
-      const adminPass = this.getPostgresAdminPassword();
-      await dockerService.startContainer({
-        containerName: this.sharedPostgresName,
-        imageTag: 'postgres:16-alpine',
-        env: {
-          POSTGRES_USER: 'deploymind_admin',
-          POSTGRES_PASSWORD: adminPass,
-          POSTGRES_DB: 'postgres',
-        },
-        exposedPort: 5432,
-        memoryLimitMb: 512,
-        volumes: [
-          {
-            hostVolumeName: 'deploymind-postgres-data',
-            containerPath: '/var/lib/postgresql/data',
-          },
-        ],
-        networkAliases: ['postgres', 'shared-postgres', 'db'],
-        labels: {
-          'deploymind.managed': 'true',
-          'deploymind.resource_type': 'shared_postgres',
-        },
-      });
-    } catch {
-      // Container may already be running
-    }
-
-    return resourceId;
+    return this.ensureResource('postgres');
   }
 
-  // Ensures shared Redis cluster is available and tracked in DB
   async ensureSharedRedis(): Promise<string> {
-    const isDockerReady = await dockerService.isAvailable();
-    const resourceId = 'res_shared_redis';
+    return this.ensureResource('redis');
+  }
 
-    const [existing] = await db
+  /**
+   * Generic dynamic tenant provisioning:
+   * Uses ResourcePlanner policy engine to evaluate compatibility and reuse existing container,
+   * or provision baseline instance dynamically.
+   */
+  async provisionTenant(
+    projectId: string,
+    requirement: ResourceRequirement
+  ): Promise<ResourceTenantBinding> {
+    const plan = await resourcePlanner.evaluateRequirement(requirement);
+    const execution = await resourcePlanner.executeDecision({
+      decision: plan.decision,
+      projectId,
+      requirement,
+    });
+    return execution.binding;
+  }
+
+  // Backwards-compatible PostgreSQL tenant provisioning
+  async provisionPostgresTenant(projectId: string): Promise<TenantCredentials> {
+    const binding = await this.provisionTenant(projectId, {
+      type: 'postgres',
+      isolationLevel: 'standard',
+    });
+    return {
+      connectionUri: binding.connectionUri,
+      databaseName: binding.databaseName,
+      username: binding.username,
+      password: binding.password,
+    };
+  }
+
+  // Backwards-compatible Redis tenant provisioning
+  async provisionRedisTenant(projectId: string): Promise<TenantCredentials> {
+    const binding = await this.provisionTenant(projectId, {
+      type: 'redis',
+      isolationLevel: 'standard',
+    });
+    return {
+      connectionUri: binding.connectionUri,
+      username: binding.username,
+      password: binding.password,
+      keyPrefix: binding.keyPrefix,
+    };
+  }
+
+  // Deprovisions a specific tenant for any backing service
+  async deprovisionTenant(projectId: string, type: string): Promise<void> {
+    const normalized = resourceRegistry.normalizeType(type);
+    const adapter = resourceRegistry.getAdapter(normalized);
+    if (!adapter) return;
+
+    const resourceId = `res_shared_${normalized}`;
+    const [res] = await db
       .select()
       .from(schema.sharedResources)
       .where(eq(schema.sharedResources.id, resourceId));
 
-    if (!existing) {
-      await db.insert(schema.sharedResources).values({
-        id: resourceId,
-        resourceType: 'redis',
-        containerName: this.sharedRedisName,
-        hostPort: 6379,
-        isActive: true,
-        metadata: JSON.stringify({ version: '7-alpine' }),
-      });
+    if (res) {
+      await adapter.deprovisionTenant(res.containerName, projectId);
     }
 
-    if (!isDockerReady) return resourceId;
-
-    try {
-      const redisAdminPass = this.getRedisAdminPassword();
-      await dockerService.startContainer({
-        containerName: this.sharedRedisName,
-        imageTag: 'redis:7-alpine',
-        cmd: ['redis-server', '--requirepass', redisAdminPass, '--appendonly', 'yes'],
-        env: {},
-        exposedPort: 6379,
-        memoryLimitMb: 256,
-        volumes: [
-          {
-            hostVolumeName: 'deploymind-redis-data',
-            containerPath: '/data',
-          },
-        ],
-        networkAliases: ['redis', 'shared-redis'],
-        labels: {
-          'deploymind.managed': 'true',
-          'deploymind.resource_type': 'shared_redis',
-        },
-      });
-    } catch {
-      // Container may already be running
-    }
-
-    return resourceId;
-  }
-
-  // Provisions an isolated tenant database & user in shared PostgreSQL and tracks tenant binding
-  async provisionPostgresTenant(projectId: string): Promise<TenantCredentials> {
-    const resourceId = await this.ensureSharedPostgres();
-
-    const cleanId = projectId.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-    const dbName = `db_${cleanId}`;
-    const username = `usr_${cleanId}`;
-    const password = crypto.randomBytes(16).toString('hex');
-
-    const isRunning = await dockerService.isContainerRunning(this.sharedPostgresName);
-    if (isRunning) {
-      const sqlCommands = `
-        DO \\$\\$
-        BEGIN
-          IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${username}') THEN
-            CREATE USER ${username} WITH PASSWORD '${password}';
-          END IF;
-        END
-        \\$\\$;
-        SELECT 'CREATE DATABASE ${dbName} OWNER ${username}'
-        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${dbName}')\\gexec
-        REVOKE ALL ON DATABASE ${dbName} FROM PUBLIC;
-        GRANT ALL PRIVILEGES ON DATABASE ${dbName} TO ${username};
-      `;
-
-      try {
-        const execRes = await dockerService.execCommand(this.sharedPostgresName, [
-          'psql',
-          '-U',
-          'deploymind_admin',
-          '-d',
-          'postgres',
-          '-c',
-          sqlCommands,
-        ]);
-        if (execRes && execRes.exitCode !== 0) {
-          throw new Error(`psql returned exit code ${execRes.exitCode}: ${execRes.output}`);
-        }
-      } catch (err: any) {
-        console.error('[ResourceManager] Error provisioning tenant in shared Postgres:', err);
-        throw new Error(`Failed to provision isolated PostgreSQL tenant: ${err?.message || err}`);
-      }
-    } else if (process.env.NODE_ENV !== 'test') {
-      const isDockerReady = await dockerService.isAvailable();
-      if (isDockerReady) {
-        throw new Error(`Shared PostgreSQL container is not running. Cannot provision tenant.`);
-      }
-    }
-
-    const connectionUri = `postgresql://${username}:${password}@${this.sharedPostgresName}:5432/${dbName}`;
-
-    // Record or update tenant in DB
-    const tenantId = `ten_pg_${projectId.slice(0, 16)}`;
     await db
       .delete(schema.resourceTenants)
-      .where(
-        and(
-          eq(schema.resourceTenants.projectId, projectId),
-          eq(schema.resourceTenants.resourceId, resourceId)
-        )
-      );
-
-    await db.insert(schema.resourceTenants).values({
-      id: tenantId,
-      resourceId,
-      projectId,
-      databaseName: dbName,
-      username,
-      encryptedCredentials: JSON.stringify({ connectionUri, password }),
-      createdAt: Date.now(),
-    });
-
-    return {
-      connectionUri,
-      databaseName: dbName,
-      username,
-      password,
-    };
+      .where(eq(schema.resourceTenants.projectId, projectId));
   }
 
-  // Safely deprovisions tenant database and removes tenant record
   async deprovisionPostgresTenant(projectId: string): Promise<void> {
-    const cleanId = projectId.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-    const dbName = `db_${cleanId}`;
-    const username = `usr_${cleanId}`;
-
-    const isRunning = await dockerService.isContainerRunning(this.sharedPostgresName);
-    if (isRunning) {
-      const teardownCommands = `
-        SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${dbName}';
-        DROP DATABASE IF EXISTS ${dbName};
-        DROP USER IF EXISTS ${username};
-      `;
-
-      try {
-        await dockerService.execCommand(this.sharedPostgresName, [
-          'psql',
-          '-U',
-          'deploymind_admin',
-          '-d',
-          'postgres',
-          '-c',
-          teardownCommands,
-        ]);
-      } catch (err) {
-        console.warn('[ResourceManager] Deprovisioning tenant in shared Postgres warning:', err);
-      }
-    }
-
-    await db
-      .delete(schema.resourceTenants)
-      .where(eq(schema.resourceTenants.projectId, projectId));
+    return this.deprovisionTenant(projectId, 'postgres');
   }
 
-  // Provisions Redis connection and tracks tenant for project
-  async provisionRedisTenant(projectId: string): Promise<TenantCredentials> {
-    const resourceId = await this.ensureSharedRedis();
-    const cleanId = projectId.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-    const username = `usr_${cleanId}`;
-    const password = crypto.randomBytes(16).toString('hex');
-    const keyPrefix = `proj_${cleanId}:`;
-
-    const isRunning = await dockerService.isContainerRunning(this.sharedRedisName);
-    if (isRunning) {
-      const redisAdminPass = this.getRedisAdminPassword();
-      try {
-        const execRes = await dockerService.execCommand(this.sharedRedisName, [
-          'redis-cli',
-          '-a',
-          redisAdminPass,
-          'ACL',
-          'SETUSER',
-          username,
-          'on',
-          `>${password}`,
-          `~${keyPrefix}*`,
-          `~${cleanId}:*`,
-          '+@all',
-          '-@dangerous',
-        ]);
-        if (execRes && execRes.exitCode !== 0) {
-          throw new Error(`redis-cli exited with code ${execRes.exitCode}: ${execRes.output}`);
-        }
-      } catch (err: any) {
-        console.error('[ResourceManager] Error provisioning tenant in shared Redis:', err);
-        throw new Error(`Failed to configure isolated Redis ACL for tenant: ${err?.message || err}`);
-      }
-    } else if (process.env.NODE_ENV !== 'test') {
-      const isDockerReady = await dockerService.isAvailable();
-      if (isDockerReady) {
-        throw new Error(`Shared Redis container is not running. Cannot provision tenant.`);
-      }
-    }
-
-    const connectionUri = `redis://${username}:${password}@${this.sharedRedisName}:6379`;
-    const tenantId = `ten_rd_${projectId.slice(0, 16)}`;
-
-    await db
-      .delete(schema.resourceTenants)
-      .where(
-        and(
-          eq(schema.resourceTenants.projectId, projectId),
-          eq(schema.resourceTenants.resourceId, resourceId)
-        )
-      );
-
-    await db.insert(schema.resourceTenants).values({
-      id: tenantId,
-      resourceId,
-      projectId,
-      databaseName: `proj_${cleanId}`,
-      username,
-      encryptedCredentials: JSON.stringify({ connectionUri, keyPrefix }),
-      createdAt: Date.now(),
-    });
-
-    return {
-      connectionUri,
-      username,
-      password,
-      keyPrefix,
-    };
-  }
-
-  // Safely deprovisions Redis tenant
   async deprovisionRedisTenant(projectId: string): Promise<void> {
-    const cleanId = projectId.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-    const username = `usr_${cleanId}`;
-
-    const isRunning = await dockerService.isContainerRunning(this.sharedRedisName);
-    if (isRunning) {
-      const redisAdminPass = this.getRedisAdminPassword();
-      try {
-        await dockerService.execCommand(this.sharedRedisName, [
-          'redis-cli',
-          '-a',
-          redisAdminPass,
-          'ACL',
-          'DELUSER',
-          username,
-        ]);
-      } catch {
-        // Non-fatal
-      }
-    }
-
-    await db
-      .delete(schema.resourceTenants)
-      .where(eq(schema.resourceTenants.projectId, projectId));
+    return this.deprovisionTenant(projectId, 'redis');
   }
 
-  // Count active tenants depending on a shared resource
+  // Count active project tenants depending on a shared resource
   async getTenantCount(resourceId: string): Promise<number> {
     const rows = await db
       .select()
@@ -376,7 +153,29 @@ export class ResourceManager {
     return rows.length;
   }
 
-  // Deletion guard for shared PostgreSQL: blocks deletion if applications depend on it
+  // Safe deletion guard: blocks deletion if applications depend on the shared resource
+  async deleteSharedResource(resourceId: string, force = false): Promise<void> {
+    const tenantCount = await this.getTenantCount(resourceId);
+    if (tenantCount > 0 && !force) {
+      throw new Error(
+        `Safety Violation: Cannot delete shared resource ${resourceId} while ${tenantCount} project tenant(s) are actively bound.`
+      );
+    }
+
+    const [res] = await db
+      .select()
+      .from(schema.sharedResources)
+      .where(eq(schema.sharedResources.id, resourceId));
+
+    if (res) {
+      await dockerService.stopAndRemove(res.containerName);
+      await db
+        .update(schema.sharedResources)
+        .set({ isActive: false })
+        .where(eq(schema.sharedResources.id, resourceId));
+    }
+  }
+
   async deleteSharedPostgres(force = false): Promise<void> {
     const tenantCount = await this.getTenantCount('res_shared_postgres');
     if (tenantCount > 0 && !force) {
@@ -384,11 +183,41 @@ export class ResourceManager {
         `Safety Violation: Cannot delete shared PostgreSQL cluster while ${tenantCount} project tenant(s) are actively bound.`
       );
     }
-    await dockerService.stopAndRemove(this.sharedPostgresName);
-    await db
-      .update(schema.sharedResources)
-      .set({ isActive: false })
-      .where(eq(schema.sharedResources.id, 'res_shared_postgres'));
+    return this.deleteSharedResource('res_shared_postgres', force);
+  }
+
+  // Returns full dependency graph of all shared resources and their bound applications
+  async getDependencyGraph(): Promise<Array<{
+    resourceId: string;
+    resourceType: string;
+    containerName: string;
+    isActive: boolean;
+    tenants: Array<{
+      projectId: string;
+      databaseName?: string;
+      createdAt: number;
+    }>;
+  }>> {
+    const resources = await db.select().from(schema.sharedResources);
+    const tenants = await db.select().from(schema.resourceTenants);
+
+    return resources.map((r) => {
+      const boundTenants = tenants
+        .filter((t) => t.resourceId === r.id)
+        .map((t) => ({
+          projectId: t.projectId,
+          databaseName: t.databaseName || undefined,
+          createdAt: t.createdAt,
+        }));
+
+      return {
+        resourceId: r.id,
+        resourceType: r.resourceType,
+        containerName: r.containerName,
+        isActive: r.isActive,
+        tenants: boundTenants,
+      };
+    });
   }
 }
 

@@ -12,6 +12,8 @@ import { dockerService } from '../modules/docker/docker.service.js';
 import { backupManager } from '../modules/backup/backup.manager.js';
 import { webhookService } from '../modules/webhooks/webhook.service.js';
 import { eventBus } from '../core/events.js';
+import { resourceManager } from '../modules/resources/resource.manager.js';
+import { resourceRegistry } from '../modules/resources/resource.registry.js';
 
 import { aiChatService } from '../modules/ai/chat.service.js';
 import { settingsService } from '../modules/settings/settings.service.js';
@@ -650,6 +652,53 @@ export async function registerRoutes(app: FastifyInstance) {
       return { success: true };
     } catch (err: any) {
       return reply.status(500).send({ error: err.message || 'Failed to remove route' });
+    }
+  });
+
+  // --- Generic Backing Resources & Dependency Graph Endpoints ---
+  app.get('/api/resources/types', async () => {
+    return {
+      supportedTypes: resourceRegistry.listSupportedTypes(),
+    };
+  });
+
+  app.get('/api/resources/dependencies', async () => {
+    const graph = await resourceManager.getDependencyGraph();
+    return { dependencyGraph: graph };
+  });
+
+  app.get('/api/resources/shared', async () => {
+    const resources = await db.select().from(schema.sharedResources);
+    const tenants = await db.select().from(schema.resourceTenants);
+    return resources.map((r) => ({
+      ...r,
+      activeTenantsCount: tenants.filter((t) => t.resourceId === r.id).length,
+    }));
+  });
+
+  app.post('/api/resources/shared/ensure', async (req, reply) => {
+    const body = req.body as { type: string };
+    if (!body?.type) {
+      return reply.status(400).send({ error: 'Resource type is required' });
+    }
+    try {
+      const resourceId = await resourceManager.ensureResource(body.type);
+      return { success: true, resourceId };
+    } catch (err: any) {
+      return reply.status(400).send({ error: err.message });
+    }
+  });
+
+  app.delete('/api/resources/shared/:resourceId', async (req, reply) => {
+    const { resourceId } = req.params as { resourceId: string };
+    const query = req.query as { force?: string };
+    const force = query?.force === 'true';
+
+    try {
+      await resourceManager.deleteSharedResource(resourceId, force);
+      return { success: true, message: `Shared resource ${resourceId} removed.` };
+    } catch (err: any) {
+      return reply.status(400).send({ error: err.message });
     }
   });
 
