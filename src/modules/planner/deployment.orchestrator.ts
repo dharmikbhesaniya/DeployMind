@@ -14,6 +14,7 @@ import { healthObserver } from '../health/health.observer.js';
 import { diagnosticHealer } from '../health/diagnostic.healer.js';
 import { dockerfileSynthesizer } from '../builder/dockerfile.synthesizer.js';
 import { nativeRunner } from '../native-runner/native.runner.js';
+import { capacityService } from '../system/capacity.service.js';
 import { eventBus } from '../../core/events.js';
 import type { DeploymentPlan } from '../../core/types.js';
 
@@ -216,6 +217,47 @@ export class DeploymentOrchestrator {
       message: `Starting autonomous deployment for ${plan.projectName}...`,
     });
 
+    // Preflight: Host Resource Admission Check
+    const admission = await capacityService.evaluateAdmission({
+      requiredCpu: 1,
+      requiredMemoryMb: 1024,
+      requiredDiskMb: 1024,
+    });
+
+    if (!admission.allowed) {
+      const errorMsg = `Deployment rejected by Admission Controller: ${admission.reasons.join(' | ')}`;
+      eventBus.emitLog({
+        deploymentId: params.deploymentId,
+        timestamp: Date.now(),
+        level: 'error',
+        stage: 'deploy',
+        message: errorMsg,
+      });
+
+      await db
+        .update(schema.deployments)
+        .set({ status: 'failed', logs: errorMsg, updatedAt: Date.now() })
+        .where(eq(schema.deployments.id, params.deploymentId));
+
+      await db.insert(schema.auditLogs).values({
+        id: `aud_${crypto.randomUUID()}`,
+        eventType: 'admission_rejected',
+        projectId,
+        details: JSON.stringify({ reasons: admission.reasons, metrics: admission.metrics }),
+        timestamp: Date.now(),
+      });
+
+      return { status: 'failed', liveUrl: '', error: errorMsg };
+    }
+
+    eventBus.emitLog({
+      deploymentId: params.deploymentId,
+      timestamp: Date.now(),
+      level: 'info',
+      stage: 'deploy',
+      message: `[Admission Controller] Host capacity admission approved. Allocatable RAM: ${admission.metrics.allocatableMemoryMb}MB, Disk free: ${admission.metrics.diskFreeMb}MB.`,
+    });
+
     // 1. Resolve environment variables: only bind user decisions, Vault reuses, or repository defaults
     const handledKeys = new Set<string>();
 
@@ -328,6 +370,8 @@ export class DeploymentOrchestrator {
             exposedPort: plan.exposedPort,
             memoryLimitMb: 1024,
             cpuLimit: 1,
+            projectId,
+            serviceId,
           });
           containerId = res.containerId;
           activePort = res.hostPort;
@@ -516,6 +560,66 @@ export class DeploymentOrchestrator {
       liveUrl: execution.liveUrl,
       plan,
     };
+  }
+
+  // Cascading safe project teardown workflow (addresses research.txt section 19)
+  async deleteProject(
+    projectId: string,
+    options: { deleteData?: boolean } = {}
+  ): Promise<{ success: boolean; freedResources: string[] }> {
+    const freedResources: string[] = [];
+
+    const [project] = await db
+      .select()
+      .from(schema.projects)
+      .where(eq(schema.projects.id, projectId));
+    if (!project) throw new Error(`Project ${projectId} not found`);
+
+    // 1. Teardown ingress routes
+    const projectServices = await db
+      .select()
+      .from(schema.services)
+      .where(eq(schema.services.projectId, projectId));
+
+    for (const s of projectServices) {
+      await proxyService.removeServiceRoute(s.id).catch(() => {});
+      freedResources.push(`Ingress route for service ${s.name}`);
+    }
+
+    // 2. Stop and remove containers
+    for (const s of projectServices) {
+      if (s.containerId && !s.containerId.startsWith('pid_')) {
+        await dockerService.stopAndRemove(s.containerId).catch(() => {});
+        freedResources.push(`Container ${s.containerId}`);
+      }
+    }
+
+    // 3. Deprovision shared resource tenants if data deletion requested
+    if (options.deleteData) {
+      await resourceManager.deprovisionPostgresTenant(projectId).catch(() => {});
+      await resourceManager.deprovisionRedisTenant(projectId).catch(() => {});
+      freedResources.push('PostgreSQL & Redis tenant allocations');
+
+      const repoDir = path.join(config.dataDir, 'repos', projectId);
+      if (fs.existsSync(repoDir)) {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+        freedResources.push('Repository context directory');
+      }
+    }
+
+    // 4. Record audit event
+    await db.insert(schema.auditLogs).values({
+      id: `aud_${crypto.randomUUID()}`,
+      eventType: 'project_deleted',
+      projectId,
+      details: JSON.stringify({ freedResources, deleteData: Boolean(options.deleteData) }),
+      timestamp: Date.now(),
+    });
+
+    // 5. Delete project entity (cascades services, deployments, bindings in SQLite)
+    await db.delete(schema.projects).where(eq(schema.projects.id, projectId));
+
+    return { success: true, freedResources };
   }
 }
 

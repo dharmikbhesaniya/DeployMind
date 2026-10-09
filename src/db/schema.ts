@@ -113,3 +113,26 @@ export const systemSettings = sqliteTable('system_settings', {
   value: text('value').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
+
+export const auditLogs = sqliteTable('audit_logs', {
+  id: text('id').primaryKey(),
+  eventType: text('event_type').notNull(),
+  projectId: text('project_id'),
+  serviceId: text('service_id'),
+  details: text('details').notNull(), // JSON payload
+  timestamp: integer('timestamp').notNull(),
+});
+
+export const incidents = sqliteTable('incidents', {
+  id: text('id').primaryKey(),
+  serviceId: text('service_id').references(() => services.id, { onDelete: 'cascade' }),
+  deploymentId: text('deployment_id'),
+  symptom: text('symptom').notNull(),
+  diagnosis: text('diagnosis').notNull(),
+  actionTaken: text('action_taken'),
+  riskLevel: text('risk_level').notNull().default('SAFE'), // 'SAFE' | 'OPERATOR_APPROVAL_REQUIRED'
+  resolved: integer('resolved', { mode: 'boolean' }).notNull().default(false),
+  createdAt: integer('created_at').notNull(),
+  resolvedAt: integer('resolved_at'),
+});
+

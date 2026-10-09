@@ -193,7 +193,7 @@ export class DockerService {
           PortBindings: {
             '80/tcp': [{ HostPort: '80' }],
             '443/tcp': [{ HostPort: '443' }],
-            '2019/tcp': [{ HostIp: '0.0.0.0', HostPort: '2019' }],
+            '2019/tcp': [{ HostIp: '127.0.0.1', HostPort: '2019' }],
           },
           Binds: [`${caddyJsonPath}:/etc/caddy/caddy.json`],
           RestartPolicy: { Name: 'unless-stopped' },
@@ -229,7 +229,7 @@ export class DockerService {
     return startPort;
   }
 
-  // Create and start application container
+  // Create and start application container with ownership labels and localhost isolation
   async startContainer(params: {
     containerName: string;
     imageTag: string;
@@ -238,6 +238,9 @@ export class DockerService {
     hostPort?: number;
     memoryLimitMb?: number;
     cpuLimit?: number;
+    projectId?: string;
+    serviceId?: string;
+    labels?: Record<string, string>;
   }): Promise<{ containerId: string; hostPort: number }> {
     await this.ensureNetwork();
 
@@ -263,17 +266,25 @@ export class DockerService {
     const memoryBytes = (params.memoryLimitMb || 1024) * 1024 * 1024;
     const nanoCpus = (params.cpuLimit || 1) * 1e9;
 
+    const labels: Record<string, string> = {
+      'deploymind.managed': 'true',
+      'deploymind.project_id': params.projectId || '',
+      'deploymind.service_id': params.serviceId || '',
+      ...(params.labels || {}),
+    };
+
     const container = await this.docker.createContainer({
       name: params.containerName,
       Image: params.imageTag,
       Env: envArray,
+      Labels: labels,
       ExposedPorts: {
         [`${params.exposedPort}/tcp`]: {},
       },
       HostConfig: {
         NetworkMode: this.networkName,
         PortBindings: {
-          [`${params.exposedPort}/tcp`]: [{ HostIp: '0.0.0.0', HostPort: hostPort.toString() }],
+          [`${params.exposedPort}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: hostPort.toString() }],
         },
         RestartPolicy: { Name: 'unless-stopped' },
         Memory: memoryBytes,
@@ -334,6 +345,27 @@ export class DockerService {
 
     const inspect = await exec.inspect();
     return { exitCode: inspect.ExitCode || 0, output };
+  }
+
+  // Lists all containers owned and managed by DeployMind
+  async listManagedContainers(): Promise<Docker.ContainerInfo[]> {
+    try {
+      const list = await this.docker.listContainers({ all: true });
+      return list.filter((c) => c.Labels && c.Labels['deploymind.managed'] === 'true');
+    } catch {
+      return [];
+    }
+  }
+
+  // Inspects a container to verify if it is running
+  async isContainerRunning(containerNameOrId: string): Promise<boolean> {
+    try {
+      const container = this.docker.getContainer(containerNameOrId);
+      const inspect = await container.inspect();
+      return Boolean(inspect.State && inspect.State.Running);
+    } catch {
+      return false;
+    }
   }
 }
 

@@ -1,6 +1,7 @@
 import { dockerService } from '../docker/docker.service.js';
 import { proxyService } from '../proxy/proxy.service.js';
 import { vaultService } from '../vault/vault.service.js';
+import { incidentService } from './incident.service.js';
 import { eventBus } from '../../core/events.js';
 
 export interface AutoHealResult {
@@ -40,9 +41,21 @@ export class DiagnosticHealer {
 
         const cmd = params.migrationCommand.split(' ');
         await dockerService.execCommand(params.containerName, cmd);
+        const action = `Executed database migration (${params.migrationCommand})`;
+
+        const inc = await incidentService.recordIncident({
+          serviceId: params.serviceId,
+          deploymentId: params.deploymentId,
+          symptom: 'Database tables or relations missing in container runtime',
+          diagnosis: 'Unapplied database migration detected in logs',
+          riskLevel: 'SAFE',
+          actionTaken: action,
+        });
+        await incidentService.resolveIncident(inc.id, action);
+
         return {
           remediated: true,
-          actionTaken: `Executed database migration (${params.migrationCommand})`,
+          actionTaken: action,
         };
       }
     }
@@ -67,9 +80,20 @@ export class DiagnosticHealer {
           targetUpstream: `${params.containerName}:${detectedPort}`,
         });
 
+        const action = `Reconfigured proxy upstream from :${params.configuredPort} to :${detectedPort}`;
+        const inc = await incidentService.recordIncident({
+          serviceId: params.serviceId,
+          deploymentId: params.deploymentId,
+          symptom: `Application listening on port ${detectedPort} rather than expected port ${params.configuredPort}`,
+          diagnosis: 'Port mismatch detected in application bootstrap logs',
+          riskLevel: 'SAFE',
+          actionTaken: action,
+        });
+        await incidentService.resolveIncident(inc.id, action);
+
         return {
           remediated: true,
-          actionTaken: `Reconfigured proxy upstream from :${params.configuredPort} to :${detectedPort}`,
+          actionTaken: action,
           newPort: detectedPort,
         };
       }
@@ -104,9 +128,20 @@ export class DiagnosticHealer {
         vaultCredentialId: cred.id,
       });
 
+      const action = `Synthesized and injected missing required secret "${missingKey}"`;
+      const inc = await incidentService.recordIncident({
+        serviceId: params.serviceId,
+        deploymentId: params.deploymentId,
+        symptom: `Application crashed due to missing environment variable "${missingKey}"`,
+        diagnosis: 'Required configuration missing in runtime environment',
+        riskLevel: 'SAFE',
+        actionTaken: action,
+      });
+      await incidentService.resolveIncident(inc.id, action);
+
       return {
         remediated: true,
-        actionTaken: `Synthesized and injected missing required secret "${missingKey}"`,
+        actionTaken: action,
       };
     }
 

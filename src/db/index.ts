@@ -108,6 +108,28 @@ export function initDatabase() {
       value TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      project_id TEXT,
+      service_id TEXT,
+      details TEXT NOT NULL,
+      timestamp INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS incidents (
+      id TEXT PRIMARY KEY,
+      service_id TEXT REFERENCES services(id) ON DELETE CASCADE,
+      deployment_id TEXT,
+      symptom TEXT NOT NULL,
+      diagnosis TEXT NOT NULL,
+      action_taken TEXT,
+      risk_level TEXT NOT NULL DEFAULT 'SAFE',
+      resolved INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      resolved_at INTEGER
+    );
   `);
 }
 

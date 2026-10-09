@@ -11,6 +11,10 @@ import { eventBus } from '../core/events.js';
 
 import { aiChatService } from '../modules/ai/chat.service.js';
 import { settingsService } from '../modules/settings/settings.service.js';
+import { capacityService } from '../modules/system/capacity.service.js';
+import { reconcilerService } from '../modules/orchestration/reconciler.service.js';
+import { retentionManager } from '../modules/orchestration/retention.manager.js';
+import { incidentService } from '../modules/health/incident.service.js';
 
 export async function registerRoutes(app: FastifyInstance) {
   // System status check
@@ -274,36 +278,56 @@ export async function registerRoutes(app: FastifyInstance) {
     return results;
   });
 
-  // Delete a deployed project and purge all containers, volumes, routes, and records
+  // Delete a deployed project with complete cascading teardown of routes, containers, tenants, and state
   app.delete('/api/projects/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const [project] = await db.select().from(schema.projects).where(eq(schema.projects.id, id));
-    if (!project) {
-      return reply.status(404).send({ error: 'Project not found' });
-    }
+    const query = req.query as { deleteData?: string };
+    const deleteData = query?.deleteData !== 'false';
 
     try {
-      // 1. Terminate and remove all Docker containers and proxy routes
-      const servs = await db.select().from(schema.services).where(eq(schema.services.projectId, id));
-      for (const s of servs) {
-        if (s.containerId && !s.containerId.startsWith('pid_')) {
-          await dockerService.stopAndRemove(s.containerId).catch(() => {});
-        }
-        await proxyService.removeServiceRoute(s.id).catch(() => {});
-      }
-
-      // 2. Remove deployments and project record
-      await db.delete(schema.deployments).where(eq(schema.deployments.projectId, id)).catch(() => {});
-      await db.delete(schema.services).where(eq(schema.services.projectId, id)).catch(() => {});
-      await db.delete(schema.projects).where(eq(schema.projects.id, id));
-
+      const result = await deploymentOrchestrator.deleteProject(id, { deleteData });
       return {
         success: true,
-        message: `Project "${project.name}" and all associated containers, data, and routes were deleted.`,
+        message: 'Project and all associated infrastructure was safely torn down.',
+        freedResources: result.freedResources,
       };
     } catch (err: any) {
+      if (err.message?.includes('not found')) {
+        return reply.status(404).send({ error: err.message });
+      }
       return reply.status(500).send({ error: err.message || 'Failed to delete project' });
     }
+  });
+
+  // Host Capacity Discovery & Resource Admission
+  app.get('/api/system/capacity', async () => {
+    return capacityService.getHostMetrics();
+  });
+
+  // Manual Trigger for Desired-State Reconciliation Loop
+  app.post('/api/orchestration/reconcile', async () => {
+    return reconcilerService.reconcile();
+  });
+
+  // Active Incidents & Diagnostics
+  app.get('/api/incidents', async () => {
+    return incidentService.getActiveIncidents();
+  });
+
+  // Persistent Infrastructure Audit Trail
+  app.get('/api/audit-logs', async () => {
+    return db
+      .select()
+      .from(schema.auditLogs)
+      .orderBy(desc(schema.auditLogs.timestamp))
+      .limit(50);
+  });
+
+  // Automated Artifact & Log Retention Pruning (7-day policy)
+  app.post('/api/orchestration/prune', async (req) => {
+    const body = req.body as { retentionDays?: number };
+    const days = body?.retentionDays || 7;
+    return retentionManager.pruneOldArtifacts(days);
   });
 
   // List all credentials in the Vault
