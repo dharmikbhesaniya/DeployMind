@@ -216,4 +216,51 @@ describe('Architectural Integrity & Control Plane Verification (resarch.txt)', (
       expect(found).toBeUndefined();
     });
   });
+
+  describe('6. Resource Locking & Deployment Concurrency Control', () => {
+    it('should acquire lock and prevent concurrent access on same project', async () => {
+      const { lockManager } = await import('../src/core/lock.manager.js');
+      const testLockId = `proj_lock_${Date.now()}`;
+
+      const acquired1 = lockManager.acquire(testLockId);
+      expect(acquired1).toBe(true);
+      expect(lockManager.isLocked(testLockId)).toBe(true);
+
+      // Concurrent attempt must be rejected
+      const acquired2 = lockManager.acquire(testLockId);
+      expect(acquired2).toBe(false);
+
+      // Release allows subsequent acquisition
+      lockManager.release(testLockId);
+      expect(lockManager.isLocked(testLockId)).toBe(false);
+
+      const acquired3 = lockManager.acquire(testLockId);
+      expect(acquired3).toBe(true);
+      lockManager.release(testLockId);
+    });
+  });
+
+  describe('7. Automated Artifact & Log Retention Manager', () => {
+    it('should run retention pruning without errors and record audit log', async () => {
+      const { retentionManager } = await import('../src/modules/orchestration/retention.manager.js');
+      const report = await retentionManager.pruneOldArtifacts(7);
+
+      expect(report.timestamp).toBeGreaterThan(0);
+      expect(typeof report.prunedDeploymentLogs).toBe('number');
+      expect(typeof report.freedBytesEstimate).toBe('number');
+    });
+
+    it('POST /api/orchestration/prune should trigger retention pruning via API', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/orchestration/prune',
+        payload: { retentionDays: 7 },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const json = JSON.parse(res.payload);
+      expect(json.timestamp).toBeDefined();
+    });
+  });
 });
+

@@ -2,6 +2,8 @@ import { eq } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { dockerService } from '../docker/docker.service.js';
 import { proxyService } from '../proxy/proxy.service.js';
+import { lockManager } from '../../core/lock.manager.js';
+import { retentionManager } from './retention.manager.js';
 
 export interface ReconciliationReport {
   timestamp: number;
@@ -14,6 +16,7 @@ export interface ReconciliationReport {
 export class ReconcilerService {
   private intervalTimer: NodeJS.Timeout | null = null;
   private isReconciling = false;
+  private lastRetentionPruneTime = 0;
 
   // Starts continuous desired-state reconciliation loop
   start(intervalMs = 30000): void {
@@ -60,6 +63,11 @@ export class ReconcilerService {
       if (isDockerReady) {
         for (const s of allServices) {
           if (!s.containerId || s.containerId.startsWith('pid_')) continue;
+
+          // Skip reconciling services belonging to a project currently undergoing active deployment
+          if (lockManager.isLocked(s.projectId)) {
+            continue;
+          }
 
           const isRunning = await dockerService.isContainerRunning(s.containerId);
 
@@ -135,6 +143,12 @@ export class ReconcilerService {
         routesReconciled = (await db.select().from(schema.domains)).length;
       } catch {
         // Non-fatal
+      }
+
+      // 4. Automated log & artifact retention pruning (runs every 24 hours)
+      if (Date.now() - this.lastRetentionPruneTime > 24 * 60 * 60 * 1000) {
+        this.lastRetentionPruneTime = Date.now();
+        await retentionManager.pruneOldArtifacts(7).catch(() => {});
       }
     } finally {
       this.isReconciling = false;

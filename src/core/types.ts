@@ -69,6 +69,17 @@ export const DeploymentPlanSchema = z.object({
     })
   ).default([]),
   securityRisks: z.array(z.string()).default([]),
+  confidenceScore: z.number().default(0.95),
+  evidenceExplanation: z
+    .array(
+      z.object({
+        category: z.string(),
+        detectedValue: z.string(),
+        source: z.string(),
+        confidence: z.number(),
+      })
+    )
+    .default([]),
 });
 
 export type DeploymentPlan = z.infer<typeof DeploymentPlanSchema>;
